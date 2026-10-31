@@ -76,7 +76,7 @@ async def test_mcp_tools_end_to_end(service):
     server = create_server(service)
     async with Client(server) as client:
         tools = {t.name for t in (await client.list_tools()).tools}
-        assert tools == {"get_race_card", "get_odds", "place_bet", "get_race_result"}
+        assert tools == {"get_race_card", "get_odds", "place_bet", "get_race_result", "settle_pending_bets", "get_stats"}
 
         card = await client.call_tool("get_race_card", {"date": "2026-11-07", "course": "TOKYO"})
         assert not card.is_error
@@ -94,6 +94,12 @@ async def test_mcp_tools_end_to_end(service):
 
         result = await client.call_tool("get_race_result", {"race_id": SAT_MAIN})
         assert result.structured_content["status"] == "確定"
+
+        stats = await client.call_tool("get_stats", {})
+        assert stats.structured_content["overall"]["bets"] == 1
+
+        settle = await client.call_tool("settle_pending_bets", {})
+        assert settle.structured_content == {"settled": [], "waiting": []}
 
         bad = await client.call_tool("get_odds", {"race_id": "nope"})
         assert bad.is_error

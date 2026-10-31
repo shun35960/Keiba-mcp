@@ -78,10 +78,24 @@ AI の出力は信用せず、必ずここで検証する。
 
 ## 認証情報の扱い
 
-- ID・パスワード・暗証番号は**環境変数またはシークレットストアのみ**に置く
+- ID・パスワード・暗証番号は**シークレットストア（Bitwarden Secrets Manager）または環境変数のみ**に置く
 - リポジトリにコミットしない（`.env` は `.gitignore`）
 - AI（MCP クライアント）には一切渡さない。`place_bet` の引数・戻り値にも含めない
 - ログにも出さない
+- 取り出した値は `credentials.Secret` で包み、表示しても伏せ字になるようにする
+
+### Bitwarden Secrets Manager の準備（Mac）
+
+1. Bitwarden で Secrets Manager を有効にする（無料プラン：2ユーザー・3プロジェクト・3マシンアカウントまで）
+2. プロジェクト `keiba-mcp` を作り、シークレットを4つ登録する：INET-ID・加入者番号・暗証番号・P-ARS番号
+3. マシンアカウントを作り、`keiba-mcp` プロジェクトに**読み取り専用**の権限を付けて、アクセストークンを発行する
+4. `bws` CLI をインストールする：`brew install bws`
+5. アクセストークンを macOS のキーチェーンに保存する（実行するとトークンの入力を求められる）：
+   `security add-generic-password -s keiba-mcp -a bws-access-token -w`
+6. 4つのシークレットの ID（UUID）を `config.toml` の `[credentials.bitwarden.secret_ids]` に書く。ID 自体は秘密ではない
+7. 取り出せるか確認する（値は表示されない）：`uv run admin.py check-credentials`
+
+Bitwarden を使わない場合は `config.toml` の `credentials.provider` を `"env"` にして、環境変数 `KEIBA_INET_ID`・`KEIBA_SUBSCRIBER_NUMBER`・`KEIBA_PIN`・`KEIBA_PARS_NUMBER` に置く。
 
 ## 実装方針
 

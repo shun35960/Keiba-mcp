@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.toml"
@@ -29,6 +29,11 @@ class AppConfig:
     jra_request_interval: float = 3.0
     jra_cache_path: Path = Path("cache.sqlite")
     jra_user_agent: str = "keiba-mcp (personal use)"
+    credentials_provider: str = "bitwarden"
+    bws_keychain_service: str = "keiba-mcp"
+    bws_keychain_account: str = "bws-access-token"
+    bws_path: str = "bws"
+    bws_secret_ids: dict[str, str] = field(default_factory=dict)
 
 
 def _positive_int(section: dict, key: str) -> int:
@@ -71,6 +76,13 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
     if not cache_path.is_absolute():
         cache_path = p.parent / cache_path
 
+    cred = raw.get("credentials", {})
+    provider = cred.get("provider", "bitwarden")
+    if provider not in ("bitwarden", "env"):
+        raise ValueError("config.toml: credentials.provider は \"bitwarden\" か \"env\" を指定してください")
+    bw = cred.get("bitwarden", {})
+    secret_ids = {str(k): str(v) for k, v in bw.get("secret_ids", {}).items()}
+
     return AppConfig(
         guard=guard,
         data_source=data.get("source", "dummy"),
@@ -80,4 +92,9 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         jra_request_interval=float(interval),
         jra_cache_path=cache_path,
         jra_user_agent=str(jra.get("user_agent", "keiba-mcp (personal use)")),
+        credentials_provider=provider,
+        bws_keychain_service=str(bw.get("keychain_service", "keiba-mcp")),
+        bws_keychain_account=str(bw.get("keychain_account", "bws-access-token")),
+        bws_path=str(bw.get("bws_path", "bws")),
+        bws_secret_ids=secret_ids,
     )

@@ -34,7 +34,7 @@ instant_results = false
 [voter]
 # 投票方式: "dry_run"（記録だけ。実際には買わない）または "browser"（即PAT で実際に購入する）
 # 実際に購入するのは、人間がここを "browser" に書き換えたときだけ
-mode = "browser"
+mode = "dry_run"
 
 [voter.browser]
 # 最後の「OK」（購入確定）を誰が押すか:

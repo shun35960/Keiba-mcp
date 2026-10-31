@@ -89,7 +89,9 @@ AI の出力は信用せず、必ずここで検証する。
 1. Bitwarden で Secrets Manager を有効にする（無料プラン：2ユーザー・3プロジェクト・3マシンアカウントまで）
 2. プロジェクト `keiba-mcp` を作り、シークレットを4つ登録する：INET-ID・加入者番号・暗証番号・P-ARS番号
 3. マシンアカウントを作り、`keiba-mcp` プロジェクトに**読み取り専用**の権限を付けて、アクセストークンを発行する
-4. `bws` CLI をインストールする：`brew install bws`
+4. `bws` CLI をインストールする（Homebrew には無い）：`curl https://bws.bitwarden.com/install | sh`
+   または [GitHub のリリースページ](https://github.com/bitwarden/sdk-sm/releases) から Mac 用をダウンロードする。
+   Claude Code から起動したサーバで見つからない場合は、`which bws` のフルパスを `config.toml` の `bws_path` に書く
 5. アクセストークンを macOS のキーチェーンに保存する（実行するとトークンの入力を求められる）：
    `security add-generic-password -s keiba-mcp -a bws-access-token -w`
 6. 4つのシークレットの ID（UUID）を `config.toml` の `[credentials.bitwarden.secret_ids]` に書く。ID 自体は秘密ではない

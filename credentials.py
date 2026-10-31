@@ -113,7 +113,10 @@ class BitwardenCredentialProvider(CredentialProvider):
                 env=env,
             )
         except FileNotFoundError:
-            raise CredentialError("bws コマンドが見つかりません（brew install bws でインストールしてください）") from None
+            raise CredentialError(
+                "bws コマンドが見つかりません（README の手順でインストールし、"
+                "見つからない場合は config.toml の bws_path にフルパスを書いてください）"
+            ) from None
         except (OSError, subprocess.TimeoutExpired) as e:
             raise CredentialError(f"{label} を取り出せませんでした（{type(e).__name__}）") from None
         if p.returncode != 0:

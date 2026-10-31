@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- 人間による補充（停止の解除）の記録。補充時点の累計損失を基準にし、以後の損失だけを停止ラインと比べる
+CREATE TABLE IF NOT EXISTS replenishments (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    at            TEXT    NOT NULL,
+    loss_baseline INTEGER NOT NULL,
+    note          TEXT
+);
 """
 
 
@@ -116,6 +124,30 @@ class Database:
             "SELECT COALESCE(SUM(amount), 0), COALESCE(SUM(payout), 0) FROM bets WHERE status = 'accepted'"
         ).fetchone()
         return int(row[0]) - int(row[1])
+
+    def loss_baseline(self) -> int:
+        row = self._conn.execute("SELECT loss_baseline FROM replenishments ORDER BY id DESC LIMIT 1").fetchone()
+        return 0 if row is None else int(row[0])
+
+    def loss_since_replenish(self) -> int:
+        """最後の補充以降の損失（補充していなければ累計損失）。停止ラインはこれと比べる。"""
+        return self.cumulative_loss() - self.loss_baseline()
+
+    def replenish(self, note: str | None = None) -> int:
+        """人間が補充して投票を再開する。停止を解除し、現在の累計損失を新しい基準にする。基準値を返す。
+
+        MCP ツールからは呼ばない（AI が自分で停止を解除できないように）。admin.py からだけ使う。
+        """
+        with self.transaction():
+            baseline = self.cumulative_loss()
+            self._conn.execute(
+                "INSERT INTO replenishments (at, loss_baseline, note) VALUES (?, ?, ?)", (_now(), baseline, note)
+            )
+            self._conn.execute("DELETE FROM state WHERE key = 'halted'")
+        return baseline
+
+    def replenishment_history(self) -> list[sqlite3.Row]:
+        return self._conn.execute("SELECT * FROM replenishments ORDER BY id").fetchall()
 
     # ------------------------------------------------------------------ 停止状態
 

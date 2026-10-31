@@ -26,7 +26,8 @@ keiba-mcp/
 ├─ data/
 │  ├─ base.py         # データ取得のインターフェース
 │  ├─ dummy.py        # ダミーデータ（最初はこれ）
-│  └─ scraper.py      # Playwright スクレイピング（後で実装）
+│  ├─ scraper.py      # JRA 公式サイトからの取得（間隔制限・キャッシュつき）
+│  └─ jra_parse.py    # JRA のページ（HTML）の解析
 ├─ voter/
 │  ├─ base.py         # 投票のインターフェース
 │  ├─ dry_run.py      # 記録だけ（最初はこれ）
@@ -39,7 +40,7 @@ keiba-mcp/
 
 | ツール | 内容 |
 | --- | --- |
-| `get_race_card(date, course?)` | 指定日の出馬表（レース一覧・出走馬）を返す |
+| `get_race_card(date, course?, race_number?)` | 指定日の出馬表（レース一覧・出走馬）を返す。`race_number` を指定すると近走成績・血統つきの詳細版 |
 | `get_odds(race_id)` | 指定レースの券種別オッズを返す |
 | `place_bet(race_id, bet_type, horses, amount)` | 買い目を送る。ガード層を通過したものだけ投票層へ。結果（受理/拒否と理由）を返す |
 | `get_race_result(race_id)` | 結果（着順・払戻）をデータ層から取得し、そのレースの買い目を精算して返す |
@@ -81,7 +82,8 @@ AI の出力は信用せず、必ずここで検証する。
 - 言語: Python 3.12+
 - MCP: 公式 Python SDK（mcp 2.x。旧 FastMCP は `MCPServer` に改名されている）
 - パッケージ管理: uv
-- ブラウザ操作: Playwright
+- データ取得: httpx + BeautifulSoup（JRA の JRADB ページは JavaScript なしで取れるため Playwright は使わない）
+- ブラウザ操作（実投票、未実装）: Playwright
 - 記録: SQLite
 - テスト: pytest（ガード層は特に網羅する）
 
@@ -92,11 +94,22 @@ AI の出力は信用せず、必ずここで検証する。
 3. `data/base.py` と `data/dummy.py`
 4. `voter/base.py` と `voter/dry_run.py`
 5. `server.py` で3ツールを公開し、MCP クライアントから動作確認
-6. `data/scraper.py`（Playwright）で実データ取得。取得元の規約確認・アクセス間隔の制限・キャッシュを必ず入れる
+6. `data/scraper.py` で実データ取得。取得元の規約確認・アクセス間隔の制限・キャッシュを必ず入れる
 7. ドライランで買い目と結果を蓄積し、回収率を集計する仕組みを作る
 8. （検証後・別判断）`voter/browser.py` の実装
 
-**現時点のスコープは 1〜5。** 6 以降は別途指示する。
+**ステップ1〜6は実装済み。** 7 以降は別途指示する。
+
+## 実データの取得（ステップ6）
+
+取得元は JRA 公式サイト（`www.jra.go.jp/JRADB/`）。
+
+- 利用規約（[ご利用に際して](https://www.jra.go.jp/use/)）を確認済み。自動取得を禁止する記載はなく、robots.txt も全ページ許可（2026年10月時点）。掲載内容は JRA の著作物なので**私的使用の範囲**で使い、取得したデータを再配布しない
+- リクエストの間隔は最低 3 秒（`config.toml` の `data.jra.request_interval_sec`、1 秒未満は設定不可）
+- 取得したページは `cache.sqlite` にキャッシュする。有効期限は開催一覧 10 分、レース一覧 5 分、出馬表 10 分、オッズ 1 分、結果 5 分
+- 出馬表は開催週の分だけ取得できる（JRA の出馬表ページに載っている範囲）。結果は過去の開催も取得できる
+- 出走取消・競走除外の馬を含む買い目は、精算時に返還（払戻＝投票額）として扱う
+- ページの構造が変わったら `data/jra_parse.py` を直す。テストは架空データの見本 HTML（`tests/fixtures/jra/`）で行い、ネットワークには出ない
 
 ## 使い方
 
@@ -123,7 +136,7 @@ claude mcp add keiba -- uv run --directory /path/to/keiba-mcp server.py
 
 ## Claude Code への指示
 
-- このREADMEのスコープ（ステップ1〜5）から始める
+- このREADMEのスコープ（ステップ1〜6、実装済み）を守る
 - 実購入・ログイン処理は実装しない（`voter/browser.py` はスタブのみ）
 - ガード層には必ずテストを書く
 - 設計に迷ったら、実装前に質問する

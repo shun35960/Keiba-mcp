@@ -44,9 +44,13 @@ def test_result_pending_before_race(make_service):
     assert service.db.unsettled_bets(SAT_MAIN)
 
 
-def test_result_for_unknown_race_raises(service):
+def test_result_for_unknown_race_is_pending(service):
+    assert service.get_race_result("20261107-NAKAYAMA-11")["status"] == "未確定"
+
+
+def test_result_with_malformed_race_id_raises(service):
     with pytest.raises(ValueError):
-        service.get_race_result("20261107-NAKAYAMA-11")
+        service.get_race_result("nope")
 
 
 def test_get_odds_default_and_combination(service):

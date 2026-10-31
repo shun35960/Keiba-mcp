@@ -15,8 +15,15 @@ bet_unit = 100
 allowed_race_numbers = [11]
 
 [data]
-# データ取得元: "dummy"（scraper はステップ6で実装）
-source = "dummy"
+# データ取得元: "jra"（JRA 公式サイト）または "dummy"（ダミーデータ）
+source = "jra"
+
+[data.jra]
+# リクエストの最小間隔（秒）。取得元に負荷をかけないため 1 秒未満は不可
+request_interval_sec = 3
+# 取得したページのキャッシュ（config.toml からの相対パス）
+cache_path = "cache.sqlite"
+user_agent = "keiba-mcp (personal use)"
 
 [data.dummy]
 # false: 実データと同じく、発走10分後まで結果は未確定（発走前に結果を見てから投票することはできない）

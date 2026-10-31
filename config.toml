@@ -34,7 +34,7 @@ instant_results = false
 [voter]
 # 投票方式: "dry_run"（記録だけ。実際には買わない）または "browser"（即PAT で実際に購入する）
 # 実際に購入するのは、人間がここを "browser" に書き換えたときだけ
-mode = "dry_run"
+mode = "browser"
 
 [voter.browser]
 # 最後の「OK」（購入確定）を誰が押すか: "manual"（人間が押す。既定）または "auto"（プログラムが押す）
@@ -62,10 +62,10 @@ bws_path = "bws"
 
 [credentials.bitwarden.secret_ids]
 # Bitwarden Secrets Manager の各シークレットの ID（UUID）。ID 自体は秘密ではないのでここに書いてよい
-inet_id = ""
-subscriber_number = ""
-pin = ""
-pars_number = ""
+inet_id = "148a4ac6-6a41-4971-a13e-b4f400edaf37"
+subscriber_number = "2ac0798b-aa14-4132-ad53-b4f400ec5791"
+pin = "30bb329a-6f4b-4ec1-891f-b4f400ec78ec"
+pars_number = "764cbdd3-3583-4d5f-b932-b4f400ecd885"
 
 [db]
 # config.toml からの相対パス

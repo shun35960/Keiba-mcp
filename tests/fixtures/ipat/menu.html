@@ -1,0 +1,127 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>投票メニュー</title>
+<style>.ng-hide{display:none !important} .check{display:inline-block;width:14px;height:14px;border:1px solid #888}
+input[type=checkbox],input[type=radio]{opacity:0;position:absolute}</style></head><body>
+<div id="menu">
+  <button class="btn-vote-list" ng-click="vm.toggleBetList()">リスト<span id="badge"></span></button>
+  <button href="#!/bet/basic" title="出馬表から馬を選択する方式です。" onclick="showVote()">通常 投票</button>
+</div>
+<div id="vote" class="ng-hide">
+  <div id="courses"></div><div id="races"></div>
+  <label for="bet-basic-type">式別</label>
+  <select id="bet-basic-type" ng-model="vm.oSelectType" onchange="renderHorses()">
+    <option>単勝</option><option>複勝</option><option>枠連</option><option>馬連</option><option>ワイド</option><option>馬単</option><option>３連複</option><option>３連単</option>
+  </select>
+  <span id="method-wrap" class="ng-hide"><select id="bet-basic-method" ng-model="vm.oSelectMethod" onchange="renderHorses()"><option>通常</option><option>ながし</option><option>ボックス</option></select></span>
+  <table><tbody id="horses"></tbody></table>
+  金額 <input type="text" ng-model="vm.nUnit" id="unit">00円
+  <input type="text" ng-model="vm.nUnit" class="ng-hide">
+  <button ng-click="vm.onSet()" onclick="onSet()">セット</button>
+  <button ng-click="vm.onShowBetList()" onclick="showCart()">入力終了</button>
+</div>
+<div class="ipat-vote-list ng-hide" id="cart">
+  <h1>購入予定リスト</h1>
+  <table><tbody id="cart-rows"></tbody></table>
+  合計金額：<span class="number" ng-bind="vm.getCalcTotalAmount() | number" id="total">0</span>円
+  合計金額入力：<input type="text" ng-model="vm.cAmountTotal" id="total-input">円
+  <button ng-click="vm.clickPurchase()" onclick="purchase()">購入する</button>
+</div>
+<bet-list-result></bet-list-result>
+<div class="ipat-ticket ng-hide" id="ticket"><div class="dialog-body-contents" id="ticket-body"></div></div>
+<div class="ipat-error-window ng-hide" id="dialog">
+  <div class="dialog-body-contents" id="dialog-body"></div>
+  <button class="btn btn-ok" ng-click="vm.dismiss()" onclick="dialogOk()">OK</button>
+  <button class="btn btn-cancel" ng-click="vm.cancel()" onclick="dialogCancel()">キャンセル</button>
+</div>
+<script>
+const Q = new URLSearchParams(location.search);
+const N = 12;
+const SCRATCHED = [9];
+let cart = Q.get('prefill') ? [{course:'東京', wd:'日', race:11, type:'単勝', horses:[1], unit:1}] : [];
+let sel = {course:null, race:null};
+window.__purchases = [];
+const $ = (id) => document.getElementById(id);
+const pad = (n) => String(n).padStart(2, '0');
+function badge(){ $('badge').innerHTML = cart.length ? '<span class="badge">'+cart.length+'</span>' : ''; }
+badge();
+function showVote(){
+  $('vote').classList.remove('ng-hide');
+  $('courses').innerHTML = ['東京','京都'].map(c => '<button ng-click="vm.selectCourse(oCourse.courseId)" onclick="selCourse(\''+c+'\')">'+c+'（日） 天候：晴 芝：良</button>').join('');
+}
+function selCourse(c){
+  sel.course = c;
+  const names = {9:'紅葉ステークス', 10:'秋嶺ステークス', 11:'架空賞（GI）', 12:'清里特別'};
+  let h = '';
+  for (let r = 1; r <= 12; r++) {
+    const hh = 9 + Math.floor((r*35 + 60)/60), mm = (r*35 + 59) % 60;
+    const t = r === 11 ? '15:39' : pad(hh)+':'+pad(mm);
+    h += '<button ng-click="vm.selectRace(oJgRn.nRaceIndex + 1)" onclick="selRace('+r+')">'+r+' R ( '+t+' ) '+(names[r]||'')+'</button>';
+  }
+  $('races').innerHTML = h;
+}
+function selRace(r){ sel.race = r; renderHorses(); }
+function curType(){ return $('bet-basic-type').value; }
+function renderHorses(){
+  const t = curType();
+  $('method-wrap').classList.toggle('ng-hide', ['単勝','複勝'].includes(t));
+  const ordered = {'馬単':2, '３連単':3}[t] || 0;
+  let h = '';
+  for (let n = 1; n <= N; n++) {
+    const dis = SCRATCHED.includes(n) ? ' disabled' : '';
+    if (ordered) {
+      h += '<tr><td>'+n+'</td>';
+      for (let k = 1; k <= ordered; k++) h += '<td><label for="horse'+k+'_no'+n+'"><input type="radio" name="pos'+k+'" id="horse'+k+'_no'+n+'" value="'+n+'"'+dis+'><span class="check"></span></label></td>';
+      h += '</tr>';
+    } else {
+      h += '<tr><td>'+n+'</td><td><label for="no'+n+'"><input type="checkbox" id="no'+n+'" name="racer'+n+'"'+dis+'><span class="check"></span></label></td></tr>';
+    }
+  }
+  $('horses').innerHTML = h;
+}
+function picked(){
+  const t = curType(), ordered = {'馬単':2, '３連単':3}[t] || 0;
+  if (ordered) { const r = []; for (let k = 1; k <= ordered; k++) { const x = document.querySelector('input[name=pos'+k+']:checked'); if (x) r.push(+x.value); } return r; }
+  return [...document.querySelectorAll('#horses input:checked')].map(x => +x.id.replace('no',''));
+}
+function onSet(){
+  cart.push({course: sel.course, wd:'日', race: sel.race, type: curType(), horses: picked(), unit: +$('unit').value});
+  badge();
+}
+function showCart(){
+  $('cart').classList.remove('ng-hide');
+  let total = 0, h = '';
+  cart.forEach((it, i) => {
+    const unit = Q.get('wrongunit') ? it.unit + 1 : it.unit;
+    total += unit * 100;
+    const sep = ['馬単','３連単'].includes(it.type) ? '→' : '-';
+    h += '<tr ng-repeat="(i, item) in vm.oItems.oaBetData track by i"><td class="vote-content">'+it.course+'（'+it.wd+'）'+it.race+'R'+it.type+'<div>締切時刻：15:39</div></td>'
+       + '<td><div class="horse-combi-list">'+it.horses.map(pad).join(sep)+'</div></td>'
+       + '<td><input type="text" ng-model="item.unit" value="'+unit+'">00円</td></tr>';
+  });
+  $('cart-rows').innerHTML = h;
+  $('total').textContent = total.toLocaleString();
+}
+let mode = null;
+function showDialog(text, cancel){
+  $('dialog-body').innerHTML = text;
+  document.querySelector('#dialog .btn-cancel').style.display = cancel ? '' : 'none';
+  $('dialog').classList.remove('ng-hide');
+}
+function purchase(){
+  const total = +$('total').textContent.replace(/,/g, '');
+  if (+$('total-input').value !== total) { mode = 'error'; showDialog('合計金額入力が正しくありません。', false); return; }
+  mode = 'confirm';
+  showDialog('投票内容と金額を送信してもよろしいですか？<br>投票成立後は取消・変更は出来ません。', true);
+  if (Q.get('autook')) setTimeout(dialogOk, +Q.get('autook'));
+  if (Q.get('autocancel')) setTimeout(dialogCancel, +Q.get('autocancel'));
+}
+function dialogOk(){
+  $('dialog').classList.add('ng-hide');
+  if (mode !== 'confirm') return;
+  window.__purchases.push(JSON.parse(JSON.stringify(cart)));
+  sessionStorage.setItem('purchases', JSON.stringify(window.__purchases));
+  $('cart').classList.add('ng-hide');
+  cart = []; badge();
+  if (!Q.get('noticket')) { $('ticket-body').innerHTML = '投票を受け付けました。<br>受付番号 0042'; $('ticket').classList.remove('ng-hide'); }
+}
+function dialogCancel(){ $('dialog').classList.add('ng-hide'); }
+</script></body></html>

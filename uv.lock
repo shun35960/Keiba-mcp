@@ -421,12 +421,10 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "httpx" },
     { name = "mcp" },
+    { name = "playwright" },
 ]
 
 [package.dev-dependencies]
-capture = [
-    { name = "playwright" },
-]
 dev = [
     { name = "pytest" },
 ]
@@ -436,10 +434,10 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.15.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mcp", specifier = ">=2.3.0" },
+    { name = "playwright", specifier = ">=1.64.1" },
 ]
 
 [package.metadata.requires-dev]
-capture = [{ name = "playwright", specifier = ">=1.64.1" }]
 dev = [{ name = "pytest", specifier = ">=9.2.0" }]
 
 [[package]]

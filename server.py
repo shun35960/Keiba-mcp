@@ -24,7 +24,7 @@ from guard import Guard, GuardRejection
 from stats import compute_stats
 from models import JST, BET_TYPE_HELP, BetType, Race, canonical_race_id, parse_bet_type, parse_race_id
 from data.scraper import FetchError
-from voter.base import Voter
+from voter.base import Voter, VoteError
 
 logger = logging.getLogger("keiba-mcp")
 
@@ -192,10 +192,18 @@ class KeibaService:
                     receipt=receipt.receipt,
                     note=note,
                 )
+        except VoteError as e:
+            # 購入しなかった（送信前に中止した）。記録はロールバックされる
+            logger.warning("place_bet: vote aborted: %s", e.reason)
+            return {"accepted": False, "reason": f"投票しませんでした: {e.reason}"}
         except Exception:
             # 投票層の失敗など。記録はロールバックされる。詳細（内部情報）は AI に返さない
             logger.exception("place_bet failed")
             return {"accepted": False, "reason": "投票処理でエラーが発生したため受理されませんでした。"}
+
+        if not receipt.confirmed:
+            # 送信はしたが成立を確認できない。損失として数えたまま投票を止め、人間に確認してもらう
+            self.db.set_halted("投票結果を確認できない買い目があるため停止（即PAT の投票履歴を人間が確認すること）")
 
         odds_at_bet = self._snapshot_odds(bet_id, bet)
         return {
@@ -209,6 +217,12 @@ class KeibaService:
             "combination": bet.combination,
             "amount": bet.amount,
             "odds_at_bet": odds_at_bet,
+            "confirmed": receipt.confirmed,
+            **(
+                {}
+                if receipt.confirmed
+                else {"warning": "購入を送信しましたが成立を確認できませんでした。投票は停止されました。人間が即PAT の投票履歴を確認します。"}
+            ),
         }
 
     def _snapshot_odds(self, bet_id: int, bet) -> float | None:
@@ -352,9 +366,9 @@ def build_voter(config: AppConfig) -> Voter:
 
         return DryRunVoter()
     if config.voter_mode == "browser":
-        from voter.browser import BrowserVoter
+        from voter.browser import build_browser_voter
 
-        return BrowserVoter()
+        return build_browser_voter(config)
     raise ValueError(f"config.toml: voter.mode '{config.voter_mode}' は不明です")
 
 

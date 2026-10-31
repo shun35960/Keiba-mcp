@@ -34,6 +34,11 @@ class AppConfig:
     bws_keychain_account: str = "bws-access-token"
     bws_path: str = "bws"
     bws_secret_ids: dict[str, str] = field(default_factory=dict)
+    browser_confirm: str = "manual"
+    browser_manual_confirm_timeout_sec: int = 180
+    browser_channel: str | None = "chrome"
+    browser_headless: bool = False
+    browser_debug_dir: Path | None = None
 
 
 def _positive_int(section: dict, key: str) -> int:
@@ -83,6 +88,15 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
     bw = cred.get("bitwarden", {})
     secret_ids = {str(k): str(v) for k, v in bw.get("secret_ids", {}).items()}
 
+    vb = voter.get("browser", {})
+    confirm = vb.get("confirm", "manual")
+    if confirm not in ("manual", "auto"):
+        raise ValueError("config.toml: voter.browser.confirm は \"manual\" か \"auto\" を指定してください")
+    if voter.get("mode", "dry_run") not in ("dry_run", "browser"):
+        raise ValueError("config.toml: voter.mode は \"dry_run\" か \"browser\" を指定してください")
+    debug_dir = vb.get("debug_dir", "captures/voter")
+    debug_path = None if not debug_dir else (Path(debug_dir) if Path(debug_dir).is_absolute() else p.parent / debug_dir)
+
     return AppConfig(
         guard=guard,
         data_source=data.get("source", "dummy"),
@@ -97,4 +111,10 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         bws_keychain_account=str(bw.get("keychain_account", "bws-access-token")),
         bws_path=str(bw.get("bws_path", "bws")),
         bws_secret_ids=secret_ids,
+        browser_confirm=confirm,
+        browser_manual_confirm_timeout_sec=int(vb.get("manual_confirm_timeout_sec", 180)),
+        browser_channel=(vb.get("browser_channel", "chrome") or None),
+        # 人間が OK を押すには画面が必要なので、manual のときは headless にしない
+        browser_headless=bool(vb.get("headless", False)) and confirm == "auto",
+        browser_debug_dir=debug_path,
     )

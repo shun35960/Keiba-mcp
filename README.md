@@ -120,7 +120,7 @@ Bitwarden を使わない場合は `config.toml` の `credentials.provider` を 
 7. ドライランで買い目と結果を蓄積し、回収率を集計する仕組みを作る
 8. （検証後・別判断）`voter/browser.py` の実装
 
-**ステップ1〜7は実装済み。** 8（実投票）は検証結果を見て別途判断する。
+**ステップ1〜8は実装済み。** 実投票は `config.toml` で人間が有効にしたときだけ動く。
 
 ## 実データの取得（ステップ6）
 
@@ -160,14 +160,32 @@ uv run report.py --settle               # 未精算を精算してから全期�
 uv run report.py --since 2026-11-01     # 期間を指定
 ```
 
-## 即PAT の画面保存（ステップ8の準備・開発用）
+## 実投票（ステップ8、即PAT）
+
+`config.toml` の `[voter]` を書き換えると、即PAT で実際に購入する。
+
+```toml
+[voter]
+mode = "browser"        # "dry_run" に戻せばドライラン
+
+[voter.browser]
+confirm = "manual"      # 最後の「OK」は人間が押す（"auto" にするとプログラムが押す）
+```
+
+- 事前に `uv sync` と `uv run admin.py check-credentials` を済ませておく
+- `place_bet` が受理されると Google Chrome が開き、ログイン → レース選択 → 券種・馬番・金額の入力 → 購入予定リストの照合 → 合計金額の入力 → 「購入する」まで自動で進む。`manual` では確認ダイアログで止まるので、内容を見て **OK かキャンセルを押す**（3分以内。過ぎるとキャンセル）
+- 購入予定リストに別の買い目が残っている・内容がガード層の内容と一致しない・約定の確認画面が出た、などのときは購入せずに中止し、理由を AI に返す
+- 「OK」の後に完了表示（受付票）を確認できなかったときは、投票を記録したうえで**自動停止**する。即PAT の投票履歴を確認してから `uv run admin.py resume --note "投票履歴を確認"` で再開する
+- 失敗時・完了時の画面は加工して `captures/voter/` に保存する（不具合の調査用）
+
+## 即PAT の画面保存（開発用）
 
 全自動投票を作るために、即PAT の各画面の構造をあなたの Mac で保存する。
 
 ```bash
-uv sync --group capture
-uv run --group capture playwright install chromium   # 初回だけ（--chrome で Google Chrome を使うなら不要）
-uv run --group capture tools/capture_ipat.py         # Google Chrome を使う場合は --chrome
+uv sync
+uv run playwright install chromium   # 初回だけ（--chrome で Google Chrome を使うなら不要）
+uv run tools/capture_ipat.py         # Google Chrome を使う場合は --chrome
 ```
 
 - ブラウザが開くので、ログインと画面の移動は**自分の手で**行う。スクリプトはクリックも入力もしない

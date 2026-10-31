@@ -1,0 +1,5 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>ログイン</title></head><body>
+<form name="FORM1">INET-ID を入力してログインしてください。
+<input type="text" name="inetid"><input type="HIDDEN" name="uh" value="x">
+<a href="#" title="ログイン" onclick="sessionStorage.setItem('inetid', document.querySelector('[name=inetid]').value); location.href='login2.html'+location.search; return false;">ログイン</a>
+</form></body></html>

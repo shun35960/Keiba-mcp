@@ -19,8 +19,9 @@ allowed_race_numbers = [11]
 source = "dummy"
 
 [data.dummy]
-# true: 発走前でも結果を返す（ドライランの動作確認用）。false: 発走時刻を過ぎるまで結果は未確定
-instant_results = true
+# false: 実データと同じく、発走10分後まで結果は未確定（発走前に結果を見てから投票することはできない）
+# true: 発走前でも結果を返す（動作確認用。結果を見てから投票できてしまうので通常は使わない）
+instant_results = false
 
 [voter]
 # 投票方式: "dry_run"（記録だけ）。"browser" はスタブで、使用不可

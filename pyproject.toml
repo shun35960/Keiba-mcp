@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "競馬の買い目をAIが決めて投票までつなぐ MCP サーバ（開発中はドライランのみ）"
 requires-python = ">=3.12"
 dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "httpx>=0.28.1",
     "mcp>=2.3.0",
 ]
 

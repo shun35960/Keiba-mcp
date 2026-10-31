@@ -10,6 +10,8 @@ AI（MCP クライアント）に公開するのは次の4ツールだけ:
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import asdict
 from datetime import date, datetime
 from typing import Any, Callable
 
@@ -19,7 +21,8 @@ from config import AppConfig, load_config
 from data.base import DataSource
 from db import Database
 from guard import Guard, GuardRejection
-from models import JST, BET_TYPE_HELP, BetType, Race, canonical_race_id, parse_bet_type
+from models import JST, BET_TYPE_HELP, BetType, Race, canonical_race_id, parse_bet_type, parse_race_id
+from data.scraper import FetchError
 from voter.base import Voter
 
 logger = logging.getLogger("keiba-mcp")
@@ -28,22 +31,53 @@ logger = logging.getLogger("keiba-mcp")
 MAX_ODDS_LIMIT = 500
 
 
-def _race_summary(race: Race, *, with_horses: bool) -> dict[str, Any]:
+def _horse_dict(h, *, with_past: bool) -> dict[str, Any]:
+    d: dict[str, Any] = {"number": h.number, "name": h.name, "scratched": h.scratched}
+    optional = {
+        "frame": h.frame,
+        "sex_age": h.sex_age,
+        "weight": h.weight,
+        "jockey": h.jockey,
+        "trainer": h.trainer,
+        "horse_weight": h.horse_weight,
+        "horse_weight_diff": h.horse_weight_diff,
+        "win_odds": h.win_odds,
+        "popularity": h.popularity,
+        "sire": h.sire,
+        "dam": h.dam,
+        "dam_sire": h.dam_sire,
+    }
+    d.update({k: v for k, v in optional.items() if v not in (None, "")})
+    if with_past and h.past_races:
+        d["past_races"] = [asdict(p) for p in h.past_races]
+    return d
+
+
+def _race_summary(race: Race, *, with_horses: bool, with_past: bool = False) -> dict[str, Any]:
     d: dict[str, Any] = {
         "race_id": race.race_id,
         "course": race.course,
         "course_name": race.course_name,
         "race_number": race.number,
         "name": race.name,
+        "race_class": race.race_class,
         "surface": race.surface,
         "distance": race.distance,
         "post_time": race.post_time.isoformat(timespec="minutes"),
     }
     if with_horses:
-        d["horses"] = [
-            {"number": h.number, "name": h.name, "jockey": h.jockey, "scratched": h.scratched} for h in race.horses
-        ]
+        d["horses"] = [_horse_dict(h, with_past=with_past) for h in race.horses]
     return d
+
+
+def _is_refunded(combination: str, refunded_horses: frozenset[int]) -> bool:
+    """出走取消・競走除外の馬を含む買い目は返還。"""
+    return bool({int(n) for n in re.findall(r"\d+", combination)} & refunded_horses)
+
+
+def _race_id_summary(race_id: str) -> dict[str, Any]:
+    k = parse_race_id(race_id)
+    return {"race_id": race_id, "course": k.course, "race_number": k.number, "date": k.date.isoformat()}
 
 
 class KeibaService:
@@ -67,16 +101,24 @@ class KeibaService:
 
     # ------------------------------------------------------------------ 出馬表・オッズ
 
-    def get_race_card(self, race_date: str, course: str | None = None) -> dict[str, Any]:
+    def get_race_card(
+        self, race_date: str, course: str | None = None, race_number: int | None = None
+    ) -> dict[str, Any]:
         try:
             d = date.fromisoformat(race_date)
         except ValueError:
             raise ValueError(f"date '{race_date}' が不正です。YYYY-MM-DD 形式で指定してください。") from None
+        if race_number is not None and not 1 <= race_number <= 12:
+            raise ValueError("race_number は 1〜12 で指定してください。")
         races = self.data.get_races(d, course)
+        if race_number is not None:
+            # レース番号を指定したときは近走成績などの詳細つき
+            detailed = [self.data.get_race(r.race_id) for r in races if r.number == race_number]
+            races = [r for r in detailed if r is not None]
         return {
             "date": d.isoformat(),
-            "races": [_race_summary(r, with_horses=True) for r in races],
-            "note": "開催がない場合 races は空です。" if not races else "",
+            "races": [_race_summary(r, with_horses=True, with_past=race_number is not None) for r in races],
+            "note": "開催がない（または出馬表が未発表の）場合 races は空です。" if not races else "",
         }
 
     def get_odds(self, race_id: str, bet_type: str | None = None, limit: int = 100) -> dict[str, Any]:
@@ -96,6 +138,7 @@ class KeibaService:
             "race": _race_summary(race, with_horses=False),
             "odds": odds,
             "key_format": "順不同の券種は '1-2'（昇順）、順番を問う券種は '1>2>3'（着順どおり）",
+            "note": "複勝・ワイドは下限値。オッズは発売中に変動します。空の場合は発売前です。",
         }
         if truncated:
             result["truncated"] = {k: f"全{n}通りのうち人気順（低オッズ順）に上位 {limit} 件のみ" for k, n in truncated.items()}
@@ -108,7 +151,11 @@ class KeibaService:
             rid = canonical_race_id(race_id)
         except (ValueError, TypeError):
             rid = str(race_id)
-        race = self.data.get_race(rid)
+        try:
+            race = self.data.get_race(rid)
+        except Exception:
+            logger.exception("get_race failed in place_bet")
+            return {"accepted": False, "reason": "レース情報を取得できなかったため受理しませんでした。時間をおいて再度試してください。"}
 
         try:
             with self.db.transaction():
@@ -164,29 +211,37 @@ class KeibaService:
 
         結果は必ずデータ層から取る。AI から結果を受け取る経路は作らない（損益をごまかせないように）。
         """
-        race = self._require_race(race_id)
-        result = self.data.get_result(race.race_id)
+        rid = canonical_race_id(race_id)  # 形式不正は ValueError
+        # 開催週を過ぎると出馬表は取れないが、結果は取れる。レース情報は取れたときだけ付ける
+        race = self.data.get_race(rid)
+        summary = _race_summary(race, with_horses=False) if race else _race_id_summary(rid)
+        result = self.data.get_result(rid)
         if result is None:
             return {
-                "race": _race_summary(race, with_horses=False),
+                "race": summary,
                 "status": "未確定",
-                "message": "結果はまだ確定していません。発走後しばらくしてから再度取得してください。",
+                "message": "結果はまだ確定していません（または存在しないレースです）。発走後しばらくしてから再度取得してください。",
             }
 
         with self.db.transaction():
             self.db.save_result(result)
-            for row in self.db.unsettled_bets(race.race_id):
+            for row in self.db.unsettled_bets(rid):
                 bt = parse_bet_type(row["bet_type"])
-                per100 = result.payouts.get(bt.code, {}).get(row["combination"], 0)
-                self.db.settle_bet(row["id"], row["amount"] * per100 // 100)
-            bets = self.db.bets_for_race(race.race_id)
+                if _is_refunded(row["combination"], result.refunded_horses):
+                    payout = row["amount"]  # 出走取消・競走除外を含む買い目は返還
+                else:
+                    per100 = result.payouts.get(bt.code, {}).get(row["combination"], 0)
+                    payout = row["amount"] * per100 // 100
+                self.db.settle_bet(row["id"], payout)
+            bets = self.db.bets_for_race(rid)
 
         staked = sum(b["amount"] for b in bets)
         returned = sum(b["payout"] or 0 for b in bets)
         return {
-            "race": _race_summary(race, with_horses=False),
+            "race": summary,
             "status": "確定",
             "order": list(result.order),
+            "refunded_horses": sorted(result.refunded_horses),
             "payouts_per_100yen": result.payouts,
             "my_bets": [
                 {
@@ -195,7 +250,8 @@ class KeibaService:
                     "combination": b["combination"],
                     "amount": b["amount"],
                     "payout": b["payout"],
-                    "hit": (b["payout"] or 0) > 0,
+                    "hit": (b["payout"] or 0) > 0 and not _is_refunded(b["combination"], result.refunded_horses),
+                    "refunded": _is_refunded(b["combination"], result.refunded_horses),
                 }
                 for b in bets
             ],
@@ -222,10 +278,16 @@ def build_data_source(config: AppConfig) -> DataSource:
         from data.dummy import DummyDataSource
 
         return DummyDataSource(instant_results=config.dummy_instant_results)
-    if config.data_source == "scraper":
-        from data.scraper import ScraperDataSource
+    if config.data_source == "jra":
+        from data.scraper import JraDataSource, JraFetcher
 
-        return ScraperDataSource()
+        return JraDataSource(
+            JraFetcher(
+                config.jra_cache_path,
+                min_interval=config.jra_request_interval,
+                user_agent=config.jra_user_agent,
+            )
+        )
     raise ValueError(f"config.toml: data.source '{config.data_source}' は不明です")
 
 
@@ -252,7 +314,9 @@ def build_service(config: AppConfig | None = None) -> KeibaService:
 
 
 INSTRUCTIONS = f"""競馬の買い目を決めて投票する MCP サーバです（現在はドライラン：実際の購入は行われません）。
+データは JRA 公式サイトから取得します（取得元に負荷をかけないよう、サーバ側で間隔制限とキャッシュをしています。同じ情報を何度も取り直さないでください）。
 手順: get_race_card で出馬表 → get_odds でオッズ → place_bet で投票 → レース後に get_race_result で結果取得・精算。
+出馬表は開催週（通常は木〜金曜に発表）の分だけ取得できます。
 race_id の形式: YYYYMMDD-競馬場コード-R番号（例: 20261101-TOKYO-11）。
 券種: {BET_TYPE_HELP}。
 投票はサーバ側のガード層（上限額・停止条件・重複など）で検証され、拒否されたら理由が返ります。"""
@@ -261,15 +325,28 @@ race_id の形式: YYYYMMDD-競馬場コード-R番号（例: 20261101-TOKYO-11�
 def create_server(service: KeibaService) -> MCPServer:
     mcp = MCPServer("keiba-mcp", instructions=INSTRUCTIONS)
 
+    def guarded(fn):
+        """取得元の通信エラーを AI 向けの文言にする。"""
+
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except FetchError:
+                logger.exception("fetch failed")
+                raise ValueError("JRA サイトからの取得に失敗しました。しばらく時間をおいてから再度試してください。") from None
+
+        return wrapper
+
     @mcp.tool()
-    def get_race_card(date: str, course: str | None = None) -> dict[str, Any]:
-        """指定日の出馬表（レース一覧と出走馬）を返す。
+    def get_race_card(date: str, course: str | None = None, race_number: int | None = None) -> dict[str, Any]:
+        """指定日の出馬表（レース一覧と出走馬）を返す。race_number を指定すると近走成績・血統などの詳細つき。
 
         Args:
             date: 開催日（YYYY-MM-DD）
             course: 競馬場で絞り込む（例: TOKYO / 東京）。省略時は全場
+            race_number: レース番号（1〜12）。指定すると詳細版（例: 11 でメインレース）
         """
-        return service.get_race_card(date, course)
+        return guarded(service.get_race_card)(date, course, race_number)
 
     @mcp.tool()
     def get_odds(race_id: str, bet_type: str | None = None, limit: int = 100) -> dict[str, Any]:
@@ -280,7 +357,7 @@ def create_server(service: KeibaService) -> MCPServer:
             bet_type: 券種（win/place/quinella/wide/exacta/trio/trifecta、または 単勝/複勝/馬連/ワイド/馬単/3連複/3連単）。省略時は単勝と複勝
             limit: 組み合わせ券種で返す件数（人気順）。最大 500
         """
-        return service.get_odds(race_id, bet_type, limit)
+        return guarded(service.get_odds)(race_id, bet_type, limit)
 
     @mcp.tool()
     def place_bet(race_id: str, bet_type: str, horses: list[int], amount: int) -> dict[str, Any]:
@@ -301,7 +378,7 @@ def create_server(service: KeibaService) -> MCPServer:
         Args:
             race_id: 例 20261101-TOKYO-11
         """
-        return service.get_race_result(race_id)
+        return guarded(service.get_race_result)(race_id)
 
     return mcp
 

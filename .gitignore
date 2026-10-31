@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# 実行時に生成される DB
+db.sqlite
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# 認証情報（絶対にコミットしない）
+.env
+.env.*

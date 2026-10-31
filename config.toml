@@ -1,0 +1,31 @@
+# keiba-mcp 固定設定
+# ここの値は MCP ツールからは読み取りも変更もできない。変更は人間がこのファイルを直接編集する。
+
+[guard]
+# 1レースあたりの上限額（円）
+per_race_limit = 1000
+# 1週間（火曜〜翌月曜。土日と祝日の月曜開催を同じ週に含める）あたりの上限額（円）
+weekly_limit = 1000
+# 累計損失（投票額合計 − 払戻合計。未確定の投票は全額損失とみなす）がこの額に達したら自動停止（円）
+# 一度停止すると、DB の停止状態を人間が解除するまで全ての投票を拒否する
+loss_stop_threshold = 10000
+# 投票金額の単位（円）
+bet_unit = 100
+# 投票を許可するレース番号（11 = メインレース）。空にすると全レース許可
+allowed_race_numbers = [11]
+
+[data]
+# データ取得元: "dummy"（scraper はステップ6で実装）
+source = "dummy"
+
+[data.dummy]
+# true: 発走前でも結果を返す（ドライランの動作確認用）。false: 発走時刻を過ぎるまで結果は未確定
+instant_results = true
+
+[voter]
+# 投票方式: "dry_run"（記録だけ）。"browser" はスタブで、使用不可
+mode = "dry_run"
+
+[db]
+# config.toml からの相対パス
+path = "db.sqlite"

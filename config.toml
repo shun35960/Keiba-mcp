@@ -35,6 +35,25 @@ instant_results = false
 # 投票方式: "dry_run"（記録だけ）。"browser" はスタブで、使用不可
 mode = "dry_run"
 
+[credentials]
+# ネット投票の認証情報の取得元: "bitwarden"（Bitwarden Secrets Manager）または "env"（環境変数 KEIBA_INET_ID など）
+# 認証情報の値そのものは、このファイルにも、リポジトリのどこにも書かない
+provider = "bitwarden"
+
+[credentials.bitwarden]
+# bws のアクセストークンを保存した macOS キーチェーンの項目
+keychain_service = "keiba-mcp"
+keychain_account = "bws-access-token"
+# bws コマンドのパス（Homebrew の場合、通常は "bws" のままでよい）
+bws_path = "bws"
+
+[credentials.bitwarden.secret_ids]
+# Bitwarden Secrets Manager の各シークレットの ID（UUID）。ID 自体は秘密ではないのでここに書いてよい
+inet_id = ""
+subscriber_number = ""
+pin = ""
+pars_number = ""
+
 [db]
 # config.toml からの相対パス
 path = "db.sqlite"

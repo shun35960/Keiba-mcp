@@ -3,6 +3,7 @@
     uv run admin.py status                      # 停止状態・損失・設定値を表示
     uv run admin.py resume --note "3000円補充"   # 補充して投票を再開（確認あり）
     uv run admin.py history                     # 補充の履歴
+    uv run admin.py check-credentials           # 認証情報を取り出せるか確認（値は表示しない）
 """
 
 from __future__ import annotations
@@ -11,7 +12,23 @@ import argparse
 import sys
 
 from config import load_config
+from credentials import CREDENTIAL_LABELS, CREDENTIAL_NAMES, CredentialError, CredentialProvider, build_credential_provider
 from db import Database
+
+
+def check_credentials(provider: CredentialProvider) -> int:
+    """各認証情報を取り出せるかだけを確認する。値・文字数は表示しない。"""
+    ok = True
+    for name in CREDENTIAL_NAMES:
+        label = CREDENTIAL_LABELS[name]
+        try:
+            provider.get(name)
+            print(f"  {label}: 取り出しOK")
+        except CredentialError as e:
+            ok = False
+            print(f"  {label}: NG - {e}")
+    print("すべて取り出せました。" if ok else "取り出せないものがあります。")
+    return 0 if ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,9 +39,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--note", help="補充のメモ（例: 3000円補充）")
     r.add_argument("--yes", action="store_true", help="確認を省略する")
     sub.add_parser("history", help="補充の履歴")
+    sub.add_parser("check-credentials", help="認証情報を取り出せるか確認する（値は表示しない）")
     args = ap.parse_args(argv)
 
     cfg = load_config()
+    if args.cmd == "check-credentials":
+        return check_credentials(build_credential_provider(cfg))
+
     db = Database(cfg.db_path)
     g = cfg.guard
     try:

@@ -34,11 +34,16 @@ class AppConfig:
     bws_keychain_account: str = "bws-access-token"
     bws_path: str = "bws"
     bws_secret_ids: dict[str, str] = field(default_factory=dict)
+    bws_token_file: Path | None = None
     browser_confirm: str = "manual"
     browser_manual_confirm_timeout_sec: int = 180
     browser_channel: str | None = "chrome"
     browser_headless: bool = False
     browser_debug_dir: Path | None = None
+    browser_external_confirm_timeout_sec: int = 300
+    browser_proxy_server: str | None = None
+    browser_tls_ca_file: Path | None = None
+    browser_ignore_https_errors: bool = False
 
 
 def _positive_int(section: dict, key: str) -> int:
@@ -87,11 +92,31 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         raise ValueError("config.toml: credentials.provider は \"bitwarden\" か \"env\" を指定してください")
     bw = cred.get("bitwarden", {})
     secret_ids = {str(k): str(v) for k, v in bw.get("secret_ids", {}).items()}
+    token_file = str(bw.get("token_file", "") or "").strip()
+    token_path = None
+    if token_file:
+        token_path = Path(token_file).expanduser()
+        if not token_path.is_absolute():
+            token_path = p.parent / token_path
 
     vb = voter.get("browser", {})
     confirm = vb.get("confirm", "manual")
-    if confirm not in ("manual", "auto"):
-        raise ValueError("config.toml: voter.browser.confirm は \"manual\" か \"auto\" を指定してください")
+    if confirm not in ("manual", "auto", "external"):
+        raise ValueError("config.toml: voter.browser.confirm は \"manual\"・\"auto\"・\"external\" のいずれかを指定してください")
+    if "proxy_username" in vb or "proxy_password" in vb:
+        raise ValueError(
+            "config.toml: プロキシのユーザー名・パスワードは config.toml に書かず、"
+            "環境変数 KEIBA_PROXY_USERNAME / KEIBA_PROXY_PASSWORD（または HTTPS_PROXY の URL）で渡してください"
+        )
+    ca = str(vb.get("tls_ca_file", "") or "").strip()
+    ca_path = None
+    if ca:
+        ca_path = Path(ca).expanduser()
+        if not ca_path.is_absolute():
+            ca_path = p.parent / ca_path
+    external_timeout = vb.get("external_confirm_timeout_sec", 300)
+    if not isinstance(external_timeout, int) or isinstance(external_timeout, bool) or external_timeout <= 0:
+        raise ValueError("config.toml: voter.browser.external_confirm_timeout_sec は正の整数で指定してください")
     if voter.get("mode", "dry_run") not in ("dry_run", "browser"):
         raise ValueError("config.toml: voter.mode は \"dry_run\" か \"browser\" を指定してください")
     debug_dir = vb.get("debug_dir", "captures/voter")
@@ -111,10 +136,15 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         bws_keychain_account=str(bw.get("keychain_account", "bws-access-token")),
         bws_path=str(bw.get("bws_path", "bws")),
         bws_secret_ids=secret_ids,
+        bws_token_file=token_path,
         browser_confirm=confirm,
         browser_manual_confirm_timeout_sec=int(vb.get("manual_confirm_timeout_sec", 180)),
         browser_channel=(vb.get("browser_channel", "chrome") or None),
-        # 人間が OK を押すには画面が必要なので、manual のときは headless にしない
-        browser_headless=bool(vb.get("headless", False)) and confirm == "auto",
+        # 人間がブラウザで OK を押す manual のときは headless にしない（auto・external は画面が無くてもよい）
+        browser_headless=bool(vb.get("headless", False)) and confirm in ("auto", "external"),
         browser_debug_dir=debug_path,
+        browser_external_confirm_timeout_sec=external_timeout,
+        browser_proxy_server=(str(vb.get("proxy_server", "") or "").strip() or None),
+        browser_tls_ca_file=ca_path,
+        browser_ignore_https_errors=bool(vb.get("ignore_https_errors", False)),
     )

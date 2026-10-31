@@ -34,17 +34,33 @@ instant_results = false
 [voter]
 # 投票方式: "dry_run"（記録だけ。実際には買わない）または "browser"（即PAT で実際に購入する）
 # 実際に購入するのは、人間がここを "browser" に書き換えたときだけ
-mode = "browser"
+mode = "dry_run"
 
 [voter.browser]
-# 最後の「OK」（購入確定）を誰が押すか: "manual"（人間が押す。既定）または "auto"（プログラムが押す）
+# 最後の「OK」（購入確定）を誰が押すか:
+#   "manual"   人間がブラウザで押す（既定）
+#   "auto"     プログラムが押す
+#   "external" 二段階。place_bet は確認画面で止めて保留にし、MCP クライアント側で人間の承認が取れてから
+#              confirm_vote で確定する（取り消しは cancel_vote）。画面の無い VM 上のエージェント向け
+#              ※ 承認の確認はクライアント（エージェント）の運用で行う。プログラムでは強制できない
 confirm = "manual"
+# external のときの保留の有効期限（秒）。過ぎると自動で取り消す（締切が先に来る場合は締切まで）
+external_confirm_timeout_sec = 300
 # 人間が OK を押すのを待つ時間（秒）。過ぎたらキャンセルする
 manual_confirm_timeout_sec = 180
 # 使うブラウザ: "chrome"（インストール済みの Google Chrome）または ""（Playwright の Chromium）
 browser_channel = "chrome"
 # 画面を表示せずに動かすか（manual のときは false 固定）
 headless = false
+# プロキシ（例: "http://host:3128"）。空なら環境変数 HTTPS_PROXY / https_proxy を使う
+# ユーザー名・パスワードはここに書かない。環境変数 KEIBA_PROXY_USERNAME / KEIBA_PROXY_PASSWORD
+# （または HTTPS_PROXY の URL）で渡す
+proxy_server = ""
+# TLS を中継するプロキシの CA 証明書（PEM）。プロキシの CA だけを入れたファイルを指定する（最大5個）
+# Chromium にはこの CA の公開鍵の指紋だけを信頼させる
+tls_ca_file = ""
+# 証明書の検証を全面的に無効にする（非推奨。どうしても必要なときだけ）
+ignore_https_errors = false
 # 失敗時・完了時の画面（加工済み）の保存先。config.toml からの相対パス
 debug_dir = "captures/voter"
 
@@ -57,8 +73,12 @@ provider = "bitwarden"
 # bws のアクセストークンを保存した macOS キーチェーンの項目
 keychain_service = "keiba-mcp"
 keychain_account = "bws-access-token"
-# bws コマンドのパス（Homebrew の場合、通常は "bws" のままでよい）
+# bws コマンドのパス（通常は "bws" のままでよい）
 bws_path = "bws"
+# アクセストークンを書いたファイル（キーチェーンの無い Linux の VM など向け。任意）
+# 探す順番は 環境変数 BWS_ACCESS_TOKEN → このファイル → macOS キーチェーン
+# ファイルはリポジトリの外に置き、本人だけが読める権限（chmod 600）にする
+token_file = ""
 
 [credentials.bitwarden.secret_ids]
 # Bitwarden Secrets Manager の各シークレットの ID（UUID）。ID 自体は秘密ではないのでここに書いてよい

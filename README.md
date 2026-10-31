@@ -48,6 +48,8 @@ keiba-mcp/
 | `get_race_result(race_id)` | 結果（着順・払戻）をデータ層から取得し、そのレースの買い目を精算して返す |
 | `settle_pending_bets()` | 未精算の買い目があるレースの結果をまとめて取得・精算する |
 | `get_stats(since?, until?)` | 成績（回収率・的中率・収支・最大ドローダウン）を全体・券種別・週別・投票時オッズ帯別に返す |
+| `confirm_vote(pending_id)` | 二段階投票で保留中の買い目を確定する（即PAT で購入）。**人間の承認が取れた後にだけ呼ぶ** |
+| `cancel_vote(pending_id)` | 二段階投票で保留中の買い目を取り消す（購入しない） |
 
 `place_bet` は常にガード層を通し、拒否理由は AI に分かる文言で返す。
 
@@ -96,6 +98,8 @@ AI の出力は信用せず、必ずここで検証する。
    `security add-generic-password -s keiba-mcp -a bws-access-token -w`
 6. 4つのシークレットの ID（UUID）を `config.toml` の `[credentials.bitwarden.secret_ids]` に書く。ID 自体は秘密ではない
 7. 取り出せるか確認する（値は表示されない）：`uv run admin.py check-credentials`
+
+キーチェーンの無い環境（Linux の VM など）では、アクセストークンを書いたファイルを `config.toml` の `credentials.bitwarden.token_file` に指定する（リポジトリの外に置き、`chmod 600`）。環境変数 `BWS_ACCESS_TOKEN` でも渡せる。探す順番は **環境変数 → token_file → キーチェーン**。Linux への bws のインストールは `curl https://bws.bitwarden.com/install | sh`（インストール先が無ければ先に `sudo mkdir -p /usr/local/bin`）。
 
 Bitwarden を使わない場合は `config.toml` の `credentials.provider` を `"env"` にして、環境変数 `KEIBA_INET_ID`・`KEIBA_SUBSCRIBER_NUMBER`・`KEIBA_PIN`・`KEIBA_PARS_NUMBER` に置く。
 
@@ -177,6 +181,40 @@ confirm = "manual"      # 最後の「OK」は人間が押す（"auto" にする
 - 購入予定リストに別の買い目が残っている・内容がガード層の内容と一致しない・約定の確認画面が出た、などのときは購入せずに中止し、理由を AI に返す
 - 「OK」の後に完了表示（受付票）を確認できなかったときは、投票を記録したうえで**自動停止**する。即PAT の投票履歴を確認してから `uv run admin.py resume --note "投票履歴を確認"` で再開する
 - 失敗時・完了時の画面は加工して `captures/voter/` に保存する（不具合の調査用）
+
+### 二段階投票（`confirm = "external"`、画面の無い VM 上のエージェント向け）
+
+VM 上のエージェント（Muse）向けの準備と運用手順は [docs/MUSE.md](docs/MUSE.md) にまとめている。
+
+目の前でブラウザを操作する人がいない環境で、チャットなどで人間の承認を取ってから購入するためのモード。
+
+1. `place_bet` → ガード層で検証し、金額を**仮押さえ**（上限・重複・損失に数える）。即PAT の確認画面まで進めて止め、`status: "pending_confirmation"`・`pending_id`・確認画面から読み取った内容（ガード層の内容と照合済み）・加工済みの確認画面の保存先・有効期限を返す。**まだ購入していない**
+2. 人間が承認したら `confirm_vote(pending_id)` → 「OK」を押して購入し、受付番号を返す。承認されなければ `cancel_vote(pending_id)` → 取り消し（仮押さえを解放）
+3. 有効期限（`external_confirm_timeout_sec`、既定300秒。締切が先ならそこまで）を過ぎた保留は自動で取り消す。期限切れ・不明な `pending_id`・二重確定は拒否する
+4. 保留は同時に1件だけ（同じアカウントで複数のブラウザからログインしないため）
+5. サーバが再起動して保留が消えたら「未購入」として解放し、**再送信しない**。`confirm_vote` の途中で落ちた場合は結果不明として投票を停止する（人間が投票履歴を確認して `admin.py resume`）
+
+**承認の確認は MCP クライアント（エージェント）側の運用で行う。** `confirm_vote` は AI が呼べるツールなので、プログラムで「人間が承認した」ことは強制できない（仕組みとしての強さは `auto` と同じ。ガード層の上限は効く）。
+
+```toml
+[voter]
+mode = "browser"
+
+[voter.browser]
+confirm = "external"
+headless = true             # 画面の無い VM ではヘッドレスで動かす（external・auto のときだけ有効）
+browser_channel = ""        # Google Chrome が無ければ Playwright の Chromium（uv run playwright install chromium）
+proxy_server = ""           # 空なら環境変数 HTTPS_PROXY / https_proxy
+tls_ca_file = "/path/to/proxy-ca.pem"   # TLS を中継するプロキシの CA だけを入れたファイル（最大5個）
+```
+
+### プロキシ・証明書
+
+- プロキシは `proxy_server`、空なら環境変数 `HTTPS_PROXY` / `https_proxy`。`NO_PROXY` は除外先として渡す
+- ユーザー名・パスワードは config.toml に書かない（書くと起動時にエラー）。環境変数 `KEIBA_PROXY_USERNAME` / `KEIBA_PROXY_PASSWORD`、または `HTTPS_PROXY` の URL（`http://user:pass@host:port`）で渡す
+- Chromium は CA ファイルを直接指定できず、Linux では OS の証明書ストアも読まない。そこで `tls_ca_file` の証明書の**公開鍵の指紋（SPKI）だけ**を信頼させる（`--ignore-certificate-errors-spki-list`）。OS の証明書束をそのまま指定すると全部を無条件に信頼してしまうため、6個以上入ったファイルは拒否する
+- 代わりに、VM 側で `certutil` を使って NSS（`~/.pki/nssdb`）に CA を登録する方法もある
+- `ignore_https_errors = true` は検証を全面的に無効にする。既定は無効で、有効にすると起動時に警告を出す
 
 ## 即PAT の画面保存（開発用）
 

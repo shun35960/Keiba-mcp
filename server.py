@@ -1,7 +1,8 @@
 """keiba-mcp サーバ本体。
 
-AI（MCP クライアント）に公開するのは次の4ツールだけ:
-  get_race_card / get_odds / place_bet / get_race_result
+AI（MCP クライアント）に公開するツール:
+  get_race_card / get_odds / place_bet / get_race_result / settle_pending_bets / get_stats
+  confirm_vote / cancel_vote（二段階投票 confirm = "external" のとき。人間の承認後にだけ confirm_vote を呼ぶ運用）
 設定値（上限額など）・認証情報は AI に渡さない。place_bet は必ずガード層を通す。
 
 起動: uv run server.py
@@ -11,8 +12,9 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 from dataclasses import asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 from mcp.server.mcpserver import MCPServer
@@ -20,11 +22,11 @@ from mcp.server.mcpserver import MCPServer
 from config import AppConfig, load_config
 from data.base import DataSource
 from db import Database
-from guard import Guard, GuardRejection
+from guard import CLOSE_BEFORE_POST, Guard, GuardRejection
 from stats import compute_stats
 from models import JST, BET_TYPE_HELP, BetType, Race, canonical_race_id, parse_bet_type, parse_race_id
 from data.scraper import FetchError
-from voter.base import Voter, VoteError
+from voter.base import Voter, VoteError, VoteReceipt
 
 logger = logging.getLogger("keiba-mcp")
 
@@ -101,6 +103,11 @@ class KeibaService:
         self.db = db
         self.guard = Guard(config.guard, db)
         self.clock = clock or (lambda: datetime.now(JST))
+        self._recover_pending()
+
+    @property
+    def two_phase(self) -> bool:
+        return bool(getattr(self.voter, "two_phase", False))
 
     # ------------------------------------------------------------------ 出馬表・オッズ
 
@@ -160,6 +167,9 @@ class KeibaService:
         except Exception:
             logger.exception("get_race failed in place_bet")
             return {"accepted": False, "reason": "レース情報を取得できなかったため受理しませんでした。時間をおいて再度試してください。"}
+
+        if self.two_phase:
+            return self._place_bet_two_phase(rid, race, bet_type, horses, amount, note)
 
         try:
             with self.db.transaction():
@@ -224,6 +234,197 @@ class KeibaService:
                 else {"warning": "購入を送信しましたが成立を確認できませんでした。投票は停止されました。人間が即PAT の投票履歴を確認します。"}
             ),
         }
+
+    # ------------------------------------------------------------------ 二段階投票（confirm = "external"）
+
+    def _reject_record(self, rid, race, bet_type, horses, amount, reason: str) -> dict[str, Any]:
+        self.db.insert_bet(
+            race_id=rid,
+            race_date=race.date.isoformat() if race else None,
+            week_start=None,
+            bet_type=str(bet_type),
+            combination=str(horses),
+            amount=amount if isinstance(amount, int) and not isinstance(amount, bool) else 0,
+            status="rejected",
+            reason=reason,
+        )
+        return {"accepted": False, "reason": reason}
+
+    def _place_bet_two_phase(self, rid, race, bet_type, horses, amount, note) -> dict[str, Any]:
+        """ガード層で検証して金額を仮押さえし、即PAT の確認画面まで進めて止める（購入はしない）。"""
+        self._expire_pending()
+        pending_id = secrets.token_urlsafe(24)
+        timeout = timedelta(seconds=self.config.browser_external_confirm_timeout_sec)
+        try:
+            with self.db.transaction():
+                if self.db.open_pending():
+                    return self._reject_record(
+                        rid, race, bet_type, horses, amount,
+                        "保留中の買い目があります。人間の承認が取れていれば confirm_vote、そうでなければ cancel_vote で先に片付けてください。",
+                    )
+                try:
+                    bet = self.guard.validate(
+                        race_id=rid, bet_type=bet_type, horses=horses, amount=amount, race=race, now=self.clock()
+                    )
+                except GuardRejection as e:
+                    return self._reject_record(rid, race, bet_type, horses, amount, e.reason)
+                close_at = bet.race.post_time - CLOSE_BEFORE_POST
+                bet_id = self.db.insert_bet(
+                    race_id=bet.race.race_id,
+                    race_date=bet.race.date.isoformat(),
+                    week_start=bet.week_start,
+                    bet_type=bet.bet_type.code,
+                    combination=bet.combination,
+                    amount=bet.amount,
+                    status="accepted",  # 仮押さえ（上限・重複・損失に数える）
+                    note=note,
+                    pending_id=pending_id,
+                    pending_expires_at=min(self.clock() + timeout, close_at).isoformat(),
+                )
+        except Exception:
+            logger.exception("place_bet (external) failed")
+            return {"accepted": False, "reason": "投票処理でエラーが発生したため受理されませんでした。"}
+
+        try:
+            prepared = self.voter.prepare(bet, pending_id)
+        except VoteError as e:
+            self.db.release_pending(bet_id, f"確認画面まで進めなかった（未購入）: {e.reason}")
+            logger.warning("place_bet (external): prepare aborted: %s", e.reason)
+            return {"accepted": False, "reason": f"投票しませんでした: {e.reason}"}
+        except Exception:
+            self.db.release_pending(bet_id, "確認画面まで進めなかった（未購入）")
+            logger.exception("place_bet (external): prepare failed")
+            return {"accepted": False, "reason": "投票処理でエラーが発生したため受理されませんでした（購入していません）。"}
+
+        # 準備の間に期限切れなどで取り消されていたら、画面を閉じて終わる
+        row = self.db.bet_by_pending_id(pending_id)
+        if row is None or row["pending_state"] != "pending":
+            self.voter.abort(pending_id)
+            return {"accepted": False, "reason": "確認画面の準備中に保留が取り消されました（購入していません）。"}
+        # 有効期限は確認画面が出た時点から数える（締切が先なら締切まで）
+        expires_at = min(self.clock() + timeout, close_at)
+        self.db.set_pending_expiry(bet_id, expires_at.isoformat())
+        return {
+            "accepted": True,
+            "status": "pending_confirmation",
+            "pending_id": pending_id,
+            "expires_at": expires_at.isoformat(timespec="seconds"),
+            "bet_id": bet_id,
+            "race_id": bet.race.race_id,
+            "bet_type": bet.bet_type.code,
+            "bet_type_label": bet.bet_type.label,
+            "combination": bet.combination,
+            "amount": bet.amount,
+            "dry_run": False,
+            "confirmation_screen": prepared.cart,
+            "capture_path": prepared.capture_path,
+            "message": (
+                "まだ購入していません。即PAT の確認画面で止めています。この内容で人間の承認が取れた場合だけ "
+                "confirm_vote(pending_id) を呼んでください。承認されなければ cancel_vote(pending_id)。"
+                "有効期限を過ぎると自動で取り消されます。"
+            ),
+        }
+
+    def confirm_vote(self, pending_id: Any) -> dict[str, Any]:
+        """保留中の買い目を確定する（即PAT で「OK」を押す）。人間の承認が取れた後にだけ呼ぶ運用。"""
+        if not self.two_phase:
+            return {"confirmed": False, "reason": "二段階投票（confirm = \"external\"）が有効ではありません。"}
+        self._expire_pending()
+        row = self.db.bet_by_pending_id(pending_id) if isinstance(pending_id, str) and pending_id else None
+        if row is None:
+            return {"confirmed": False, "reason": "その pending_id の保留はありません。"}
+        state = row["pending_state"]
+        if state == "done":
+            return {"confirmed": False, "reason": "この保留は既に確定済みです（二重確定はできません）。", "bet_id": row["id"]}
+        if state == "confirming":
+            return {"confirmed": False, "reason": "この保留は確定の処理中です。", "bet_id": row["id"]}
+        if state != "pending":
+            return {"confirmed": False, "reason": f"この保留は取り消し済みです（{row['reason']}）。購入していません。"}
+        if not self.db.set_pending_state(row["id"], "confirming", expected="pending"):
+            return {"confirmed": False, "reason": "この保留は既に処理されています。"}
+
+        try:
+            receipt = self.voter.commit(pending_id)
+        except VoteError as e:
+            self.db.release_pending(row["id"], f"確定できなかった（未購入）: {e.reason}")
+            return {"confirmed": False, "reason": f"購入していません: {e.reason}"}
+        except Exception:
+            # commit は「OK」を押した後に例外を出さない約束だが、念のため結果不明として扱う
+            logger.exception("confirm_vote: unexpected error")
+            receipt = VoteReceipt(receipt="UNCONFIRMED", dry_run=False, confirmed=False)
+
+        self.db.finish_pending(row["id"], receipt.receipt)
+        if not receipt.confirmed:
+            self.db.set_halted("投票結果を確認できない買い目があるため停止（即PAT の投票履歴を人間が確認すること）")
+        odds = self._snapshot_odds_for(row["id"], row["race_id"], row["bet_type"], row["combination"])
+        out = {
+            "confirmed": receipt.confirmed,
+            "bet_id": row["id"],
+            "receipt": receipt.receipt,
+            "dry_run": receipt.dry_run,
+            "race_id": row["race_id"],
+            "bet_type": row["bet_type"],
+            "combination": row["combination"],
+            "amount": row["amount"],
+            "odds_at_bet": odds,
+        }
+        if not receipt.confirmed:
+            out["warning"] = "購入を送信しましたが成立を確認できませんでした。投票は停止されました。人間が即PAT の投票履歴を確認します。"
+        return out
+
+    def cancel_vote(self, pending_id: Any) -> dict[str, Any]:
+        """保留中の買い目を取り消す（購入しない）。仮押さえを解放する。"""
+        if not self.two_phase:
+            return {"cancelled": False, "reason": "二段階投票（confirm = \"external\"）が有効ではありません。"}
+        self._expire_pending()
+        row = self.db.bet_by_pending_id(pending_id) if isinstance(pending_id, str) and pending_id else None
+        if row is None:
+            return {"cancelled": False, "reason": "その pending_id の保留はありません。"}
+        state = row["pending_state"]
+        if state == "released":
+            return {"cancelled": True, "reason": f"既に取り消し済みです（{row['reason']}）。購入していません。"}
+        if state != "pending" or not self.db.set_pending_state(row["id"], "releasing", expected="pending"):
+            return {"cancelled": False, "reason": "この保留は確定済みか確定の処理中のため、取り消せません。"}
+        self.voter.abort(pending_id)
+        self.db.release_pending(row["id"], "取り消し（未購入）")
+        return {"cancelled": True, "bet_id": row["id"], "reason": "取り消しました。購入していません。"}
+
+    def _expire_pending(self) -> None:
+        """有効期限（または締切）を過ぎた保留を取り消す。"""
+        if not self.two_phase:
+            return
+        now = self.clock()
+        for row in self.db.open_pending():
+            if row["pending_state"] != "pending" or not row["pending_expires_at"]:
+                continue
+            if datetime.fromisoformat(row["pending_expires_at"]) > now:
+                continue
+            if self.db.set_pending_state(row["id"], "releasing", expected="pending"):
+                try:
+                    self.voter.abort(row["pending_id"])
+                finally:
+                    self.db.release_pending(row["id"], "保留の期限切れ（未購入）")
+
+    def _recover_pending(self) -> None:
+        """起動時：前回のプロセスの保留を片付ける。ブラウザの画面は残っていないので再送信はしない。"""
+        for row in self.db.open_pending():
+            if row["pending_state"] == "pending":
+                # 「OK」は押していないので、購入していないことが確実
+                self.db.release_pending(row["id"], "サーバの再起動で保留が失われた（未購入）")
+            else:
+                # confirming: 「OK」を押した可能性がある。記録を残したまま停止し、人間が投票履歴を確認する
+                self.db.finish_pending(row["id"], "UNCONFIRMED")
+                self.db.set_halted("投票結果を確認できない買い目があるため停止（即PAT の投票履歴を人間が確認すること）")
+
+    def _snapshot_odds_for(self, bet_id: int, race_id: str, bet_type: str, combination: str) -> float | None:
+        try:
+            odds = self.data.get_odds(race_id, parse_bet_type(bet_type)).get(combination)
+        except Exception:
+            logger.exception("odds snapshot failed")
+            return None
+        if odds is not None:
+            self.db.set_bet_odds(bet_id, odds)
+        return odds
 
     def _snapshot_odds(self, bet_id: int, bet) -> float | None:
         """投票時点のオッズをデータ層から取って記録する（集計用）。取れなくても投票は受理済みのまま。"""
@@ -293,6 +494,7 @@ class KeibaService:
 
     def settle_pending_bets(self) -> dict[str, Any]:
         """未精算の買い目があるレースの結果をすべてデータ層から取得して精算する。"""
+        self._expire_pending()
         today = self.clock().date()
         settled: list[dict[str, Any]] = []
         waiting: list[dict[str, str]] = []
@@ -319,6 +521,7 @@ class KeibaService:
                     date.fromisoformat(v)
                 except ValueError:
                     raise ValueError(f"{label} '{v}' が不正です。YYYY-MM-DD 形式で指定してください。") from None
+        self._expire_pending()
         stats = compute_stats(self.db, since, until)
         stats["betting_halted"] = self.db.halted_reason() is not None
         stats["note"] = (
@@ -434,6 +637,9 @@ def create_server(service: KeibaService) -> MCPServer:
     ) -> dict[str, Any]:
         """買い目を送る。ガード層を通過したものだけ投票される。受理/拒否と理由を返す。
 
+        二段階投票（confirm = "external"）のときは購入せず status = "pending_confirmation" と pending_id を返す。
+        その場合は人間の承認を得てから confirm_vote、承認されなければ cancel_vote を呼ぶ。
+
         Args:
             race_id: 例 20261101-TOKYO-11
             bet_type: 券種（win/place/quinella/wide/exacta/trio/trifecta、または日本語名）
@@ -442,6 +648,27 @@ def create_server(service: KeibaService) -> MCPServer:
             note: この買い目を選んだ理由（任意、500文字まで）。後で成績を振り返るために記録される
         """
         return service.place_bet(race_id, bet_type, horses, amount, note)
+
+    @mcp.tool()
+    def confirm_vote(pending_id: str) -> dict[str, Any]:
+        """二段階投票で保留中の買い目を確定する（即PAT で実際に購入する）。
+
+        **人間（ユーザー）がこの買い目の購入を承認した後にだけ呼ぶこと。** 承認が取れていない・不明なときは呼ばない。
+        期限切れ・不明な pending_id・二重確定は拒否される。
+
+        Args:
+            pending_id: place_bet が返した pending_id
+        """
+        return service.confirm_vote(pending_id)
+
+    @mcp.tool()
+    def cancel_vote(pending_id: str) -> dict[str, Any]:
+        """二段階投票で保留中の買い目を取り消す（購入しない）。人間が承認しなかったときに呼ぶ。
+
+        Args:
+            pending_id: place_bet が返した pending_id
+        """
+        return service.cancel_vote(pending_id)
 
     @mcp.tool()
     def get_race_result(race_id: str) -> dict[str, Any]:

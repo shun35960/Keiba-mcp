@@ -76,7 +76,10 @@ async def test_mcp_tools_end_to_end(service):
     server = create_server(service)
     async with Client(server) as client:
         tools = {t.name for t in (await client.list_tools()).tools}
-        assert tools == {"get_race_card", "get_odds", "place_bet", "get_race_result", "settle_pending_bets", "get_stats"}
+        assert tools == {
+            "get_race_card", "get_odds", "place_bet", "get_race_result", "settle_pending_bets", "get_stats",
+            "confirm_vote", "cancel_vote",
+        }
 
         card = await client.call_tool("get_race_card", {"date": "2026-11-07", "course": "TOKYO"})
         assert not card.is_error

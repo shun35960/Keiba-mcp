@@ -202,3 +202,67 @@ def test_unconfirmed_after_submit_does_not_raise():
     receipt = v.vote(vbet())
     assert receipt.confirmed is False and receipt.receipt == "UNCONFIRMED"
     assert len(v.snapshots[-1]["purchases"]) == 1  # 実際には送信されている
+
+
+# ---------------------------------------------------------------- 二段階投票（confirm = "external"）
+
+
+def test_external_prepare_then_commit():
+    v = voter(confirm="external")
+    prepared = v.prepare(vbet(BetType.EXACTA, (7, 2), amount=200), "pid-1")
+    assert prepared.cart["horses"] == [7, 2] and prepared.cart["total"] == 200
+    assert prepared.cart["course"] == "東京" and prepared.cart["race_number"] == 11
+    assert v.snapshots[-1]["kind"] == "confirm" and v.snapshots[-1]["purchases"] == []  # まだ買っていない
+    assert v.has_pending("pid-1")
+    receipt = v.commit("pid-1")
+    assert receipt.confirmed and receipt.receipt == "IPAT-0042"
+    assert len(v.snapshots[-1]["purchases"]) == 1
+    assert not v.has_pending("pid-1")
+
+
+def test_external_prepare_then_abort():
+    v = voter(confirm="external")
+    v.prepare(vbet(), "pid-2")
+    v.abort("pid-2")
+    assert not v.has_pending("pid-2")
+    assert all(s["purchases"] == [] for s in v.snapshots)
+    with pytest.raises(VoteError, match="残っていません"):
+        v.commit("pid-2")
+
+
+def test_external_only_one_session():
+    v = voter(confirm="external")
+    v.prepare(vbet(), "pid-3")
+    try:
+        with pytest.raises(VoteError, match="保留中"):
+            v.prepare(vbet(horses=(2,)), "pid-4")
+    finally:
+        v.abort("pid-3")
+
+
+def test_external_prepare_failure_buys_nothing():
+    v = voter("?prefill=1", confirm="external")
+    with pytest.raises(VoteError, match="既に買い目"):
+        v.prepare(vbet(), "pid-5")
+    assert not v.has_pending("pid-5")
+
+
+def test_external_vote_is_not_used():
+    with pytest.raises(VoteError):
+        voter(confirm="external").vote(vbet())
+
+
+def test_external_end_to_end_through_service(make_service, clock):
+    """サービス＋ブラウザ（偽サイト）で prepare → confirm_vote まで通す。"""
+    v = voter(confirm="external")
+    service = make_service(voter=v, weekly_limit=10000, per_race_limit=10000)
+    # 偽サイトは 2026-11-01（日）の東京11R
+    from datetime import datetime as _dt
+
+    clock.now = _dt(2026, 11, 1, 10, 0, tzinfo=JST)
+    service.data.get_race = lambda rid: race() if rid == "20261101-TOKYO-11" else None
+    r = service.place_bet("20261101-TOKYO-11", "quinella", [7, 2], 300)
+    assert r["status"] == "pending_confirmation", r
+    assert r["confirmation_screen"]["horses"] == [2, 7]
+    c = service.confirm_vote(r["pending_id"])
+    assert c["confirmed"] is True and c["receipt"] == "IPAT-0042"

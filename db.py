@@ -29,7 +29,15 @@ CREATE TABLE IF NOT EXISTS bets (
     settled_at   TEXT,
     refunded     INTEGER NOT NULL DEFAULT 0,  -- 1: 出走取消・競走除外による返還
     odds_at_bet  REAL,              -- 投票時点のオッズ（データ層から取得。複勝・ワイドは下限値）
-    note         TEXT               -- AI が書いた買い目の理由
+    note         TEXT,              -- AI が書いた買い目の理由
+    -- 二段階投票（confirm = "external"）の保留。
+    --   pending   : 確認画面で止めて人間の承認待ち（金額は仮押さえ。上限・重複・損失に数える）
+    --   confirming: confirm_vote で「OK」を押している最中（押した可能性がある）
+    --   done      : 確定の処理が終わった
+    --   released  : 取り消し・期限切れ（未購入。status は rejected に変える）
+    pending_id         TEXT,
+    pending_state      TEXT,
+    pending_expires_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bets_race ON bets (race_id, status);
 CREATE INDEX IF NOT EXISTS idx_bets_week ON bets (week_start, status);
@@ -75,6 +83,9 @@ class Database:
             ("refunded", "INTEGER NOT NULL DEFAULT 0"),
             ("odds_at_bet", "REAL"),
             ("note", "TEXT"),
+            ("pending_id", "TEXT"),
+            ("pending_state", "TEXT"),
+            ("pending_expires_at", "TEXT"),
         ):
             if name not in cols:
                 self._conn.execute(f"ALTER TABLE bets ADD COLUMN {name} {ddl}")
@@ -176,14 +187,57 @@ class Database:
         reason: str | None = None,
         receipt: str | None = None,
         note: str | None = None,
+        pending_id: str | None = None,
+        pending_expires_at: str | None = None,
     ) -> int:
         cur = self._conn.execute(
             """INSERT INTO bets (created_at, race_id, race_date, week_start, bet_type, combination,
-                                 amount, status, reason, receipt, note)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (_now(), race_id, race_date, week_start, bet_type, combination, amount, status, reason, receipt, note),
+                                 amount, status, reason, receipt, note, pending_id, pending_state, pending_expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (_now(), race_id, race_date, week_start, bet_type, combination, amount, status, reason, receipt, note,
+             pending_id, "pending" if pending_id else None, pending_expires_at),
         )
         return int(cur.lastrowid)
+
+    # ------------------------------------------------------------------ 二段階投票の保留
+
+    def bet_by_pending_id(self, pending_id: str) -> sqlite3.Row | None:
+        return self._conn.execute("SELECT * FROM bets WHERE pending_id = ?", (pending_id,)).fetchone()
+
+    def open_pending(self) -> list[sqlite3.Row]:
+        """確定・取り消しが済んでいない保留（pending / confirming）。"""
+        return self._conn.execute(
+            "SELECT * FROM bets WHERE pending_state IN ('pending', 'confirming') ORDER BY id"
+        ).fetchall()
+
+    def set_pending_state(self, bet_id: int, state: str, *, expected: str | None = None) -> bool:
+        """保留の状態を変える。expected を指定したら、その状態のときだけ変える（二重確定の防止）。"""
+        with self._lock:
+            if expected is None:
+                cur = self._conn.execute("UPDATE bets SET pending_state = ? WHERE id = ?", (state, bet_id))
+            else:
+                cur = self._conn.execute(
+                    "UPDATE bets SET pending_state = ? WHERE id = ? AND pending_state = ?", (state, bet_id, expected)
+                )
+            return cur.rowcount == 1
+
+    def set_pending_expiry(self, bet_id: int, expires_at: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE bets SET pending_expires_at = ? WHERE id = ?", (expires_at, bet_id))
+
+    def release_pending(self, bet_id: int, reason: str) -> None:
+        """保留を取り消す（未購入）。仮押さえを解放するため status を rejected にする。"""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE bets SET status = 'rejected', reason = ?, pending_state = 'released' WHERE id = ?",
+                (reason, bet_id),
+            )
+
+    def finish_pending(self, bet_id: int, receipt: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE bets SET receipt = ?, pending_state = 'done' WHERE id = ?", (receipt, bet_id)
+            )
 
     def set_bet_odds(self, bet_id: int, odds: float) -> None:
         with self._lock:
@@ -193,7 +247,8 @@ class Database:
         return [
             r[0]
             for r in self._conn.execute(
-                "SELECT DISTINCT race_id FROM bets WHERE status = 'accepted' AND payout IS NULL ORDER BY race_id"
+                "SELECT DISTINCT race_id FROM bets WHERE status = 'accepted' AND payout IS NULL"
+                " AND COALESCE(pending_state, '') NOT IN ('pending', 'confirming') ORDER BY race_id"
             )
         ]
 
@@ -211,7 +266,8 @@ class Database:
 
     def unsettled_bets(self, race_id: str) -> list[sqlite3.Row]:
         return self._conn.execute(
-            "SELECT * FROM bets WHERE race_id = ? AND status = 'accepted' AND payout IS NULL ORDER BY id",
+            "SELECT * FROM bets WHERE race_id = ? AND status = 'accepted' AND payout IS NULL"
+            " AND COALESCE(pending_state, '') NOT IN ('pending', 'confirming') ORDER BY id",
             (race_id,),
         ).fetchall()
 

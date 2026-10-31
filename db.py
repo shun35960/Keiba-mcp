@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS bets (
     reason       TEXT,              -- 拒否理由
     receipt      TEXT,              -- 投票層の受付番号
     payout       INTEGER,           -- 精算後の払戻額（外れは0）。未精算は NULL
-    settled_at   TEXT
+    settled_at   TEXT,
+    refunded     INTEGER NOT NULL DEFAULT 0,  -- 1: 出走取消・競走除外による返還
+    odds_at_bet  REAL,              -- 投票時点のオッズ（データ層から取得。複勝・ワイドは下限値）
+    note         TEXT               -- AI が書いた買い目の理由
 );
 CREATE INDEX IF NOT EXISTS idx_bets_race ON bets (race_id, status);
 CREATE INDEX IF NOT EXISTS idx_bets_week ON bets (week_start, status);
@@ -55,6 +58,18 @@ class Database:
         self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """古い DB に後から追加した列を足す。"""
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(bets)")}
+        for name, ddl in (
+            ("refunded", "INTEGER NOT NULL DEFAULT 0"),
+            ("odds_at_bet", "REAL"),
+            ("note", "TEXT"),
+        ):
+            if name not in cols:
+                self._conn.execute(f"ALTER TABLE bets ADD COLUMN {name} {ddl}")
 
     def close(self) -> None:
         self._conn.close()
@@ -128,14 +143,39 @@ class Database:
         status: str,
         reason: str | None = None,
         receipt: str | None = None,
+        note: str | None = None,
     ) -> int:
         cur = self._conn.execute(
             """INSERT INTO bets (created_at, race_id, race_date, week_start, bet_type, combination,
-                                 amount, status, reason, receipt)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (_now(), race_id, race_date, week_start, bet_type, combination, amount, status, reason, receipt),
+                                 amount, status, reason, receipt, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (_now(), race_id, race_date, week_start, bet_type, combination, amount, status, reason, receipt, note),
         )
         return int(cur.lastrowid)
+
+    def set_bet_odds(self, bet_id: int, odds: float) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE bets SET odds_at_bet = ? WHERE id = ?", (odds, bet_id))
+
+    def unsettled_race_ids(self) -> list[str]:
+        return [
+            r[0]
+            for r in self._conn.execute(
+                "SELECT DISTINCT race_id FROM bets WHERE status = 'accepted' AND payout IS NULL ORDER BY race_id"
+            )
+        ]
+
+    def accepted_bets(self, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
+        """受理した買い目（レース日で絞り込み可、両端を含む）。"""
+        sql = "SELECT * FROM bets WHERE status = 'accepted'"
+        args: list[str] = []
+        if since:
+            sql += " AND race_date >= ?"
+            args.append(since)
+        if until:
+            sql += " AND race_date <= ?"
+            args.append(until)
+        return self._conn.execute(sql + " ORDER BY race_date, id", args).fetchall()
 
     def unsettled_bets(self, race_id: str) -> list[sqlite3.Row]:
         return self._conn.execute(
@@ -148,10 +188,10 @@ class Database:
             "SELECT * FROM bets WHERE race_id = ? AND status = 'accepted' ORDER BY id", (race_id,)
         ).fetchall()
 
-    def settle_bet(self, bet_id: int, payout: int) -> None:
+    def settle_bet(self, bet_id: int, payout: int, *, refunded: bool = False) -> None:
         self._conn.execute(
-            "UPDATE bets SET payout = ?, settled_at = ? WHERE id = ? AND payout IS NULL",
-            (payout, _now(), bet_id),
+            "UPDATE bets SET payout = ?, settled_at = ?, refunded = ? WHERE id = ? AND payout IS NULL",
+            (payout, _now(), int(refunded), bet_id),
         )
 
     # ------------------------------------------------------------------ 結果

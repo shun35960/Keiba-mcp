@@ -21,6 +21,7 @@ from config import AppConfig, load_config
 from data.base import DataSource
 from db import Database
 from guard import Guard, GuardRejection
+from stats import compute_stats
 from models import JST, BET_TYPE_HELP, BetType, Race, canonical_race_id, parse_bet_type, parse_race_id
 from data.scraper import FetchError
 from voter.base import Voter
@@ -29,6 +30,8 @@ logger = logging.getLogger("keiba-mcp")
 
 # 組み合わせ券種のオッズで一度に返す最大件数の上限
 MAX_ODDS_LIMIT = 500
+# 買い目の理由メモの最大文字数
+MAX_NOTE_LENGTH = 500
 
 
 def _horse_dict(h, *, with_past: bool) -> dict[str, Any]:
@@ -146,7 +149,8 @@ class KeibaService:
 
     # ------------------------------------------------------------------ 投票
 
-    def place_bet(self, race_id: Any, bet_type: Any, horses: Any, amount: Any) -> dict[str, Any]:
+    def place_bet(self, race_id: Any, bet_type: Any, horses: Any, amount: Any, note: Any = None) -> dict[str, Any]:
+        note = (note.strip()[:MAX_NOTE_LENGTH] or None) if isinstance(note, str) else None
         try:
             rid = canonical_race_id(race_id)
         except (ValueError, TypeError):
@@ -186,12 +190,14 @@ class KeibaService:
                     amount=bet.amount,
                     status="accepted",
                     receipt=receipt.receipt,
+                    note=note,
                 )
         except Exception:
             # 投票層の失敗など。記録はロールバックされる。詳細（内部情報）は AI に返さない
             logger.exception("place_bet failed")
             return {"accepted": False, "reason": "投票処理でエラーが発生したため受理されませんでした。"}
 
+        odds_at_bet = self._snapshot_odds(bet_id, bet)
         return {
             "accepted": True,
             "bet_id": bet_id,
@@ -202,7 +208,19 @@ class KeibaService:
             "bet_type_label": bet.bet_type.label,
             "combination": bet.combination,
             "amount": bet.amount,
+            "odds_at_bet": odds_at_bet,
         }
+
+    def _snapshot_odds(self, bet_id: int, bet) -> float | None:
+        """投票時点のオッズをデータ層から取って記録する（集計用）。取れなくても投票は受理済みのまま。"""
+        try:
+            odds = self.data.get_odds(bet.race.race_id, bet.bet_type).get(bet.combination)
+        except Exception:
+            logger.exception("odds snapshot failed")
+            return None
+        if odds is not None:
+            self.db.set_bet_odds(bet_id, odds)
+        return odds
 
     # ------------------------------------------------------------------ 結果・精算
 
@@ -227,12 +245,13 @@ class KeibaService:
             self.db.save_result(result)
             for row in self.db.unsettled_bets(rid):
                 bt = parse_bet_type(row["bet_type"])
-                if _is_refunded(row["combination"], result.refunded_horses):
+                refunded = _is_refunded(row["combination"], result.refunded_horses)
+                if refunded:
                     payout = row["amount"]  # 出走取消・競走除外を含む買い目は返還
                 else:
                     per100 = result.payouts.get(bt.code, {}).get(row["combination"], 0)
                     payout = row["amount"] * per100 // 100
-                self.db.settle_bet(row["id"], payout)
+                self.db.settle_bet(row["id"], payout, refunded=refunded)
             bets = self.db.bets_for_race(rid)
 
         staked = sum(b["amount"] for b in bets)
@@ -257,6 +276,42 @@ class KeibaService:
             ],
             "race_summary": {"staked": staked, "returned": returned, "profit": returned - staked},
         }
+
+    def settle_pending_bets(self) -> dict[str, Any]:
+        """未精算の買い目があるレースの結果をすべてデータ層から取得して精算する。"""
+        today = self.clock().date()
+        settled: list[dict[str, Any]] = []
+        waiting: list[dict[str, str]] = []
+        for rid in self.db.unsettled_race_ids():
+            if parse_race_id(rid).date > today:
+                waiting.append({"race_id": rid, "status": "未確定（開催前）"})
+                continue
+            try:
+                out = self.get_race_result(rid)
+            except FetchError:
+                logger.exception("settle failed for %s", rid)
+                waiting.append({"race_id": rid, "status": "取得失敗（あとで再試行）"})
+                continue
+            if out["status"] != "確定":
+                waiting.append({"race_id": rid, "status": "未確定"})
+                continue
+            settled.append({"race_id": rid, **out["race_summary"]})
+        return {"settled": settled, "waiting": waiting}
+
+    def get_stats(self, since: str | None = None, until: str | None = None) -> dict[str, Any]:
+        for label, v in (("since", since), ("until", until)):
+            if v is not None:
+                try:
+                    date.fromisoformat(v)
+                except ValueError:
+                    raise ValueError(f"{label} '{v}' が不正です。YYYY-MM-DD 形式で指定してください。") from None
+        stats = compute_stats(self.db, since, until)
+        stats["betting_halted"] = self.db.halted_reason() is not None
+        stats["note"] = (
+            "回収率・的中率は精算済みの買い目だけで計算しています（返還は除外）。"
+            "未精算がある場合は先に settle_pending_bets を呼んでください。"
+        )
+        return stats
 
     # ------------------------------------------------------------------
 
@@ -315,7 +370,7 @@ def build_service(config: AppConfig | None = None) -> KeibaService:
 
 INSTRUCTIONS = f"""競馬の買い目を決めて投票する MCP サーバです（現在はドライラン：実際の購入は行われません）。
 データは JRA 公式サイトから取得します（取得元に負荷をかけないよう、サーバ側で間隔制限とキャッシュをしています。同じ情報を何度も取り直さないでください）。
-手順: get_race_card で出馬表 → get_odds でオッズ → place_bet で投票 → レース後に get_race_result で結果取得・精算。
+手順: get_race_card で出馬表 → get_odds でオッズ → place_bet で投票（note に理由を書く）→ レース後に get_race_result または settle_pending_bets で結果取得・精算 → get_stats で成績を振り返る。
 出馬表は開催週（通常は木〜金曜に発表）の分だけ取得できます。
 race_id の形式: YYYYMMDD-競馬場コード-R番号（例: 20261101-TOKYO-11）。
 券種: {BET_TYPE_HELP}。
@@ -360,7 +415,9 @@ def create_server(service: KeibaService) -> MCPServer:
         return guarded(service.get_odds)(race_id, bet_type, limit)
 
     @mcp.tool()
-    def place_bet(race_id: str, bet_type: str, horses: list[int], amount: int) -> dict[str, Any]:
+    def place_bet(
+        race_id: str, bet_type: str, horses: list[int], amount: int, note: str | None = None
+    ) -> dict[str, Any]:
         """買い目を送る。ガード層を通過したものだけ投票される。受理/拒否と理由を返す。
 
         Args:
@@ -368,8 +425,9 @@ def create_server(service: KeibaService) -> MCPServer:
             bet_type: 券種（win/place/quinella/wide/exacta/trio/trifecta、または日本語名）
             horses: 馬番の配列。単勝・複勝は1頭、馬連・ワイド・馬単は2頭、3連複・3連単は3頭。馬単・3連単は着順どおりに並べる
             amount: 金額（円、100円単位）
+            note: この買い目を選んだ理由（任意、500文字まで）。後で成績を振り返るために記録される
         """
-        return service.place_bet(race_id, bet_type, horses, amount)
+        return service.place_bet(race_id, bet_type, horses, amount, note)
 
     @mcp.tool()
     def get_race_result(race_id: str) -> dict[str, Any]:
@@ -379,6 +437,21 @@ def create_server(service: KeibaService) -> MCPServer:
             race_id: 例 20261101-TOKYO-11
         """
         return guarded(service.get_race_result)(race_id)
+
+    @mcp.tool()
+    def settle_pending_bets() -> dict[str, Any]:
+        """結果がまだ反映されていない自分の買い目を、まとめて結果取得・精算する。成績を見る前に呼ぶ。"""
+        return service.settle_pending_bets()
+
+    @mcp.tool()
+    def get_stats(since: str | None = None, until: str | None = None) -> dict[str, Any]:
+        """ドライランの成績（回収率・的中率・収支）を、全体・券種別・週別・投票時オッズ帯別に返す。直近の買い目と理由メモも返す。
+
+        Args:
+            since: 集計開始日（YYYY-MM-DD、レース日で判定）。省略時は全期間
+            until: 集計終了日（YYYY-MM-DD）。省略時は全期間
+        """
+        return service.get_stats(since, until)
 
     return mcp
 

@@ -58,7 +58,7 @@ def test_bitwarden_get(monkeypatch):
     fake = FakeBws()
     p = provider(fake)
     assert p.get("pin").reveal() == "9999"
-    assert fake.calls[0]["args"] == ["bws", "secret", "get", IDS["pin"], "--output", "json"]
+    assert fake.calls[0]["args"] == ["bws", "secret", "get", IDS["pin"]]
     assert fake.calls[0]["env_token"] == "TOKEN-xyz"  # トークンは引数ではなく環境変数で渡す
     assert "TOKEN-xyz" not in fake.calls[0]["args"]
 
@@ -68,10 +68,30 @@ def test_bitwarden_missing_secret_id():
         provider(FakeBws(), ids={**IDS, "pin": ""}).get("pin")
 
 
-def test_bitwarden_failure_does_not_leak_details():
+def test_bitwarden_failure_shows_bws_error_line():
     with pytest.raises(CredentialError) as e:
-        provider(FakeBws(returncode=1)).get("pin")
-    assert "終了コード 1" in str(e.value) and "something" not in str(e.value)
+        provider(FakeBws(returncode=2)).get("pin")
+    assert "終了コード 2: error: something" in str(e.value)
+
+
+def test_bitwarden_error_masks_token():
+    class Leaky(FakeBws):
+        def __call__(self, args, **kw):
+            r = super().__call__(args, **kw)
+            r.stderr = "error: bad token TOKEN-xyz"
+            return r
+
+    with pytest.raises(CredentialError) as e:
+        provider(Leaky(returncode=1)).get("pin")
+    assert "TOKEN-xyz" not in str(e.value) and "********" in str(e.value)
+
+
+@pytest.mark.parametrize("bad", ["keiba-pin", " 3333", "'33333333-3333-3333-3333-333333333333'", "33333333333333333333333333333333"])
+def test_bitwarden_rejects_non_uuid_secret_id(bad):
+    fake = FakeBws()
+    with pytest.raises(CredentialError, match="形式が正しくありません"):
+        provider(fake, ids={**IDS, "pin": bad}).get("pin")
+    assert fake.calls == []  # bws は呼ばない
 
 
 @pytest.mark.parametrize("stdout", ["not json", json.dumps({"no_value": 1}), json.dumps({"value": ""})])

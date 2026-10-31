@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from abc import ABC, abstractmethod
 from typing import Callable
@@ -60,6 +61,20 @@ class CredentialProvider(ABC):
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _bws_error_summary(stderr: str, token: str) -> str:
+    """bws のエラー出力の要点（1行）。秘密の値は含まれない想定だが、念のためトークンは伏せる。"""
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # clap の使い方エラーは "error: ..." 行が要点
+    line = next((ln for ln in lines if ln.lower().startswith("error")), lines[0])
+    if token:
+        line = line.replace(token, "********")
+    return line[:200]
+
 
 def keychain_token(service: str, account: str, *, runner: Runner = subprocess.run) -> str:
     """macOS キーチェーンから bws のアクセストークンを読む。環境変数 BWS_ACCESS_TOKEN があればそちらを優先。"""
@@ -103,10 +118,16 @@ class BitwardenCredentialProvider(CredentialProvider):
         secret_id = self.secret_ids.get(name, "").strip()
         if not secret_id:
             raise CredentialError(f"{label} の Secret ID が config.toml に設定されていません")
-        env = {**os.environ, "BWS_ACCESS_TOKEN": self.token_source()}
+        if not _UUID_RE.fullmatch(secret_id):
+            raise CredentialError(
+                f"{label} の Secret ID の形式が正しくありません（{secret_id!r}）。"
+                "Bitwarden の画面でシークレットの ID（xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx の形）をコピーしてください"
+            )
+        token = self.token_source()
+        env = {**os.environ, "BWS_ACCESS_TOKEN": token}
         try:
             p = self.runner(
-                [self.bws_path, "secret", "get", secret_id, "--output", "json"],
+                [self.bws_path, "secret", "get", secret_id],  # 既定の出力は JSON
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -120,10 +141,11 @@ class BitwardenCredentialProvider(CredentialProvider):
         except (OSError, subprocess.TimeoutExpired) as e:
             raise CredentialError(f"{label} を取り出せませんでした（{type(e).__name__}）") from None
         if p.returncode != 0:
-            # stderr には秘密は含まれないはずだが、念のため内容は出さない
+            detail = _bws_error_summary(p.stderr, token)
             raise CredentialError(
-                f"{label} を取り出せませんでした（bws の終了コード {p.returncode}）。"
-                "Secret ID・アクセストークン・マシンアカウントの権限を確認してください"
+                f"{label} を取り出せませんでした（bws の終了コード {p.returncode}"
+                + (f": {detail}" if detail else "")
+                + "）。Secret ID・アクセストークン・マシンアカウントの権限を確認してください"
             )
         try:
             value = json.loads(p.stdout)["value"]

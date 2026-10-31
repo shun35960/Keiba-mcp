@@ -84,7 +84,7 @@ def test_bitwarden_bws_not_installed():
     def missing(*a, **k):
         raise FileNotFoundError("bws")
 
-    with pytest.raises(CredentialError, match="brew install bws"):
+    with pytest.raises(CredentialError, match="bws コマンドが見つかりません"):
         provider(missing).get("pin")
 
 

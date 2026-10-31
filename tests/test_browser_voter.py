@@ -35,7 +35,7 @@ CHROMIUM = _chromium()
 pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="Chromium が見つからない")
 try:
     import playwright  # noqa: F401
-except ImportError:  # capture グループ未インストール
+except ImportError:  # playwright 未インストール
     pytestmark = pytest.mark.skip(reason="playwright 未インストール")
 
 

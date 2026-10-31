@@ -126,7 +126,7 @@ class BrowserVoter(Voter):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            raise VoteError("Playwright が入っていません（uv sync --group capture を実行してください）") from None
+            raise VoteError("Playwright が入っていません（uv sync を実行してください）") from None
 
         o = self.options
         with sync_playwright() as p:

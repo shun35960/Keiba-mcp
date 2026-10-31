@@ -172,7 +172,7 @@ mode = "browser"        # "dry_run" に戻せばドライラン
 confirm = "manual"      # 最後の「OK」は人間が押す（"auto" にするとプログラムが押す）
 ```
 
-- 事前に `uv sync --group capture` と `uv run admin.py check-credentials` を済ませておく
+- 事前に `uv sync` と `uv run admin.py check-credentials` を済ませておく
 - `place_bet` が受理されると Google Chrome が開き、ログイン → レース選択 → 券種・馬番・金額の入力 → 購入予定リストの照合 → 合計金額の入力 → 「購入する」まで自動で進む。`manual` では確認ダイアログで止まるので、内容を見て **OK かキャンセルを押す**（3分以内。過ぎるとキャンセル）
 - 購入予定リストに別の買い目が残っている・内容がガード層の内容と一致しない・約定の確認画面が出た、などのときは購入せずに中止し、理由を AI に返す
 - 「OK」の後に完了表示（受付票）を確認できなかったときは、投票を記録したうえで**自動停止**する。即PAT の投票履歴を確認してから `uv run admin.py resume --note "投票履歴を確認"` で再開する
@@ -183,9 +183,9 @@ confirm = "manual"      # 最後の「OK」は人間が押す（"auto" にする
 全自動投票を作るために、即PAT の各画面の構造をあなたの Mac で保存する。
 
 ```bash
-uv sync --group capture
-uv run --group capture playwright install chromium   # 初回だけ（--chrome で Google Chrome を使うなら不要）
-uv run --group capture tools/capture_ipat.py         # Google Chrome を使う場合は --chrome
+uv sync
+uv run playwright install chromium   # 初回だけ（--chrome で Google Chrome を使うなら不要）
+uv run tools/capture_ipat.py         # Google Chrome を使う場合は --chrome
 ```
 
 - ブラウザが開くので、ログインと画面の移動は**自分の手で**行う。スクリプトはクリックも入力もしない

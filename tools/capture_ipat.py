@@ -2,9 +2,9 @@
 
 全自動投票（voter/browser.py）を作るために、各画面の HTML 構造を保存する。
 
-    uv run --group capture playwright install chromium   # 初回だけ（Google Chrome を使う場合は不要）
-    uv run --group capture tools/capture_ipat.py          # Playwright の Chromium で開く
-    uv run --group capture tools/capture_ipat.py --chrome # インストール済みの Google Chrome で開く
+    uv run playwright install chromium   # 初回だけ（Google Chrome を使う場合は不要）
+    uv run tools/capture_ipat.py          # Playwright の Chromium で開く
+    uv run tools/capture_ipat.py --chrome # インストール済みの Google Chrome で開く
 
 安全のための約束:
 - このスクリプトは何もクリック・入力しない。ログインも画面の移動も、あなたが手で行う
@@ -158,7 +158,7 @@ def main() -> int:
     ap.add_argument("--url", default=IPAT_URL, help="最初に開く URL")
     args = ap.parse_args()
 
-    from playwright.sync_api import sync_playwright  # 開発用の依存（--group capture）
+    from playwright.sync_api import sync_playwright
 
     out_dir = OUT_ROOT / datetime.now().strftime("%Y%m%d_%H%M%S")
     print(__doc__.split("安全のための約束:")[1])

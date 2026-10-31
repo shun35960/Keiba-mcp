@@ -39,6 +39,9 @@ def render(stats: dict[str, Any]) -> str:
     lines.append(f"  レース数 {o['races']}  最大ドローダウン {o['max_drawdown']:,}円")
     if stats["pending"]["bets"]:
         lines.append(f"  未精算 {stats['pending']['bets']}点 {stats['pending']['amount']:,}円 {stats['pending']['race_ids']}")
+    if stats.get("awaiting_confirmation", {}).get("bets"):
+        a = stats["awaiting_confirmation"]
+        lines.append(f"  確定待ち（承認待ち・未購入） {a['bets']}点 {a['amount']:,}円")
     if stats["refunded"]["bets"]:
         lines.append(f"  返還（集計外） {stats['refunded']['bets']}点 {stats['refunded']['amount']:,}円")
     if stats.get("betting_halted"):

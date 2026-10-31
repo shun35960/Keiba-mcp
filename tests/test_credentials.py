@@ -182,3 +182,77 @@ def test_credentials_not_reachable_from_mcp():
     """MCP サーバ（server.py）は認証情報のモジュールを読み込まない。"""
     src = Path("server.py").read_text(encoding="utf-8")
     assert "credentials" not in src
+
+
+# ---------------------------------------------------------------- bws トークンの探す順番（環境変数 → ファイル → キーチェーン）
+
+from credentials import resolve_bws_token  # noqa: E402
+
+
+def _no_keychain(*a, **k):
+    raise FileNotFoundError("security")  # Linux などキーチェーンの無い環境
+
+
+def test_token_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    f = tmp_path / "token"
+    f.write_text("  tok-from-file\n", encoding="utf-8")
+    assert resolve_bws_token("s", "a", token_file=f, runner=_no_keychain) == "tok-from-file"
+
+
+def test_env_beats_token_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "tok-env")
+    f = tmp_path / "token"
+    f.write_text("tok-file", encoding="utf-8")
+    assert resolve_bws_token("s", "a", token_file=f, runner=_no_keychain) == "tok-env"
+
+
+def test_token_file_beats_keychain(tmp_path, monkeypatch):
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    f = tmp_path / "token"
+    f.write_text("tok-file", encoding="utf-8")
+    called = []
+    assert resolve_bws_token("s", "a", token_file=f, runner=lambda *a, **k: called.append(1)) == "tok-file"
+    assert called == []  # キーチェーンは試さない
+
+
+def test_keychain_used_when_no_env_or_file(monkeypatch):
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    runner = lambda args, **kw: subprocess.CompletedProcess(args, 0, stdout="tok-kc\n", stderr="")  # noqa: E731
+    assert resolve_bws_token("s", "a", token_file=None, runner=runner) == "tok-kc"
+
+
+def test_no_keychain_environment_gives_helpful_error(monkeypatch):
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    with pytest.raises(CredentialError, match="token_file"):
+        resolve_bws_token("s", "a", token_file=None, runner=_no_keychain)
+
+
+@pytest.mark.parametrize("content", ["", "   \n"])
+def test_empty_token_file(tmp_path, monkeypatch, content):
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    f = tmp_path / "token"
+    f.write_text(content, encoding="utf-8")
+    with pytest.raises(CredentialError, match="空"):
+        resolve_bws_token("s", "a", token_file=f, runner=_no_keychain)
+
+
+def test_missing_token_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    with pytest.raises(CredentialError, match="読めませんでした"):
+        resolve_bws_token("s", "a", token_file=tmp_path / "nope", runner=_no_keychain)
+
+
+def test_token_errors_never_contain_value(tmp_path, monkeypatch):
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    f = tmp_path / "token"
+    f.write_bytes(b"SECRET-TOKEN-\xff\xfe")  # 文字コード不正
+    with pytest.raises(CredentialError) as e:
+        resolve_bws_token("s", "a", token_file=f, runner=_no_keychain)
+    assert "SECRET-TOKEN" not in str(e.value)
+
+
+def test_config_token_file_relative_to_config(tmp_path):
+    text = Path("config.toml").read_text(encoding="utf-8").replace('token_file = ""', 'token_file = "secrets/bws_token"')
+    (tmp_path / "c.toml").write_text(text, encoding="utf-8")
+    assert load_config(tmp_path / "c.toml").bws_token_file == tmp_path / "secrets" / "bws_token"

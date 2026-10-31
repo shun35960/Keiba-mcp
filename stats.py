@@ -59,7 +59,9 @@ def _max_drawdown(rows: list[sqlite3.Row]) -> int:
 def compute_stats(db: Database, since: str | None = None, until: str | None = None, recent: int = 10) -> dict[str, Any]:
     rows = db.accepted_bets(since, until)
     settled = [r for r in rows if r["payout"] is not None and not r["refunded"]]
-    pending = [r for r in rows if r["payout"] is None]
+    # 二段階投票で人間の承認待ち（まだ購入していない。金額は仮押さえ）
+    awaiting = [r for r in rows if r["payout"] is None and r["pending_state"] in ("pending", "confirming")]
+    pending = [r for r in rows if r["payout"] is None and r["pending_state"] not in ("pending", "confirming")]
     refunded = [r for r in rows if r["payout"] is not None and r["refunded"]]
 
     by_type: dict[str, dict[str, Any]] = {}
@@ -93,6 +95,7 @@ def compute_stats(db: Database, since: str | None = None, until: str | None = No
             "race_ids": sorted({r["race_id"] for r in pending}),
         },
         "refunded": {"bets": len(refunded), "amount": sum(r["amount"] for r in refunded)},
+        "awaiting_confirmation": {"bets": len(awaiting), "amount": sum(r["amount"] for r in awaiting)},
         "by_bet_type": by_type,
         "by_week": by_week,
         "by_odds_at_bet": by_odds,
@@ -105,7 +108,8 @@ def compute_stats(db: Database, since: str | None = None, until: str | None = No
                 "amount": r["amount"],
                 "odds_at_bet": r["odds_at_bet"],
                 "payout": r["payout"],
-                "status": "未精算" if r["payout"] is None else ("返還" if r["refunded"] else ("的中" if r["payout"] > 0 else "外れ")),
+                "status": "確定待ち" if r["pending_state"] in ("pending", "confirming") and r["payout"] is None
+                else "未精算" if r["payout"] is None else ("返還" if r["refunded"] else ("的中" if r["payout"] > 0 else "外れ")),
                 "note": r["note"],
             }
             for r in recent_rows

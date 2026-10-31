@@ -9,6 +9,10 @@
 - 購入予定リストの内容（場・日・レース・券種・馬番・金額・合計）がガード層の内容と完全に一致しなければ中止する
 - 合計金額入力欄には、ガード層で検証した金額だけを入れる
 - confirm = "manual"（既定）では、最後の「OK」は人間が押す。"auto" のときだけプログラムが押す
+- confirm = "external" では二段階：prepare で確認ダイアログまで進めて止め、MCP クライアント側で人間の承認が
+  取れてから commit で「OK」を押す（承認されなければ abort）。保留中はブラウザ専用のスレッドが画面を持ち続ける
+- プロキシ（proxy_server / HTTPS_PROXY）と、TLS を中継するプロキシの CA（tls_ca_file）に対応する。
+  CA は公開鍵の指紋（SPKI）だけを信頼する。検証の全面無効化（ignore_https_errors）は既定で使わない
 - 「OK」を押す前の失敗は VoteError（何も買っていない）。「OK」を押した後は例外を出さず、
   結果を確認できなければ confirmed=False を返す（呼び出し側が投票を停止し、人間が投票履歴を確認する）
 - 自動での再試行はしない（二重購入を防ぐため）
@@ -17,13 +21,20 @@
 
 from __future__ import annotations
 
+import base64
+import concurrent.futures
+import hashlib
 import logging
+import os
+import queue
 import re
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal, Mapping
+from urllib.parse import unquote, urlsplit
 
 from credentials import CredentialError, CredentialProvider
 from data.jra_parse import COURSE_BY_ALPHA
@@ -91,7 +102,7 @@ CONFIRM_TEXT = "送信してもよろしいですか"
 
 @dataclass(frozen=True)
 class IpatOptions:
-    confirm: Literal["manual", "auto"] = "manual"
+    confirm: Literal["manual", "auto", "external"] = "manual"
     headless: bool = False
     browser_channel: str | None = "chrome"  # None なら Playwright の Chromium
     executable_path: str | None = None  # テスト用
@@ -100,6 +111,131 @@ class IpatOptions:
     manual_confirm_timeout_sec: int = 180
     result_timeout_sec: int = 60
     debug_dir: Path | None = None  # 失敗時の画面保存先（加工してから保存）
+    proxy_server: str | None = None  # 未指定なら環境変数 HTTPS_PROXY / https_proxy
+    tls_ca_file: Path | None = None  # TLS を中継するプロキシの CA（PEM）。少数の証明書だけを入れる
+    ignore_https_errors: bool = False  # 証明書の検証を全面的に無効にする（非推奨）
+
+
+# tls_ca_file に入れてよい証明書の数の上限（OS の証明書束をそのまま渡すと、全部を無条件に信頼してしまうため）
+MAX_CA_CERTS = 5
+
+
+def spki_hashes(ca_file: str | os.PathLike) -> list[str]:
+    """PEM ファイル内の各証明書の公開鍵（SubjectPublicKeyInfo）の SHA-256 を base64 で返す。"""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    path = Path(ca_file)
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        raise VoteError(f"tls_ca_file を読めませんでした（{path}、{type(e).__name__}）") from None
+    try:
+        certs = x509.load_pem_x509_certificates(data)
+    except ValueError:
+        raise VoteError(f"tls_ca_file に PEM 形式の証明書が見つかりませんでした（{path}）") from None
+    if not certs:
+        raise VoteError(f"tls_ca_file に証明書がありません（{path}）")
+    if len(certs) > MAX_CA_CERTS:
+        raise VoteError(
+            f"tls_ca_file に証明書が {len(certs)} 個あります。プロキシの CA だけを入れたファイルを指定してください"
+            f"（OS の証明書束をそのまま使うと、すべてを無条件に信頼してしまうため {MAX_CA_CERTS} 個までにしています）"
+        )
+    out = []
+    for c in certs:
+        spki = c.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        out.append(base64.b64encode(hashlib.sha256(spki).digest()).decode())
+    return out
+
+
+def proxy_settings(proxy_server: str | None, env: Mapping[str, str]) -> dict[str, str] | None:
+    """Playwright の proxy 設定。認証情報は config に置かず、URL のユーザー情報か環境変数から取る。"""
+    raw = (proxy_server or env.get("HTTPS_PROXY") or env.get("https_proxy") or "").strip()
+    if not raw:
+        return None
+    u = urlsplit(raw if "://" in raw else f"http://{raw}")
+    if not u.hostname:
+        raise VoteError("プロキシの指定（proxy_server / HTTPS_PROXY）の形式が不正です")
+    server = f"{u.scheme}://{u.hostname}" + (f":{u.port}" if u.port else "")
+    out = {"server": server}
+    user = env.get("KEIBA_PROXY_USERNAME") or (unquote(u.username) if u.username else "")
+    password = env.get("KEIBA_PROXY_PASSWORD") or (unquote(u.password) if u.password else "")
+    if user:
+        out["username"] = user
+    if password:
+        out["password"] = password
+    bypass = env.get("NO_PROXY") or env.get("no_proxy")
+    if bypass:
+        out["bypass"] = bypass
+    return out
+
+
+def build_launch_options(o: IpatOptions, env: Mapping[str, str] | None = None) -> tuple[dict, dict]:
+    """(chromium.launch の引数, browser.new_context の引数)。プロキシのパスワードを含むのでログに出さないこと。"""
+    env = os.environ if env is None else env
+    launch: dict[str, Any] = {"headless": o.headless}
+    if o.executable_path:
+        launch["executable_path"] = o.executable_path
+    elif o.browser_channel:
+        launch["channel"] = o.browser_channel
+    proxy = proxy_settings(o.proxy_server, env)
+    if proxy:
+        launch["proxy"] = proxy
+    if o.tls_ca_file:
+        launch["args"] = ["--ignore-certificate-errors-spki-list=" + ",".join(spki_hashes(o.tls_ca_file))]
+    context: dict[str, Any] = {"locale": "ja-JP", "viewport": {"width": 1400, "height": 1000}}
+    if o.ignore_https_errors:
+        logger.warning("ipat: ignore_https_errors が有効です。証明書の検証を行いません")
+        context["ignore_https_errors"] = True
+    return launch, context
+
+
+@dataclass(frozen=True)
+class PreparedVote:
+    """二段階投票の保留（確認ダイアログで止めた状態）。"""
+
+    cart: dict[str, Any]  # 画面から読み取った購入予定リスト（ガード層の内容と照合済み）
+    capture_path: str | None  # 加工済みの確認画面の保存先
+
+
+class _BrowserThread:
+    """Playwright（同期 API）を1本の専用スレッドで動かす。保留中の画面を別のツール呼び出しから操作するため。"""
+
+    def __init__(self) -> None:
+        self._q: queue.Queue = queue.Queue()
+        self._t = threading.Thread(target=self._run, name="ipat-browser", daemon=True)
+        self._t.start()
+
+    def _run(self) -> None:
+        while True:
+            fn, fut = self._q.get()
+            if fn is None:
+                return
+            if fut.set_running_or_notify_cancel():
+                try:
+                    fut.set_result(fn())
+                except BaseException as e:  # noqa: BLE001 - 呼び出し元へそのまま渡す
+                    fut.set_exception(e)
+
+    def call(self, fn: Callable[[], Any], timeout: float | None = None) -> Any:
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        self._q.put((fn, fut))
+        return fut.result(timeout)
+
+    def stop(self) -> None:
+        self._q.put((None, None))
+
+
+@dataclass
+class _Session:
+    thread: _BrowserThread
+    pw: Any
+    browser: Any
+    context: Any
+    page: Any
+    bet: ValidatedBet
+    submitted: bool = False
+    extra: dict = field(default_factory=dict)
 
 
 def _digits(text: str) -> list[int]:
@@ -119,6 +255,26 @@ class BrowserVoter(Voter):
         self.credentials = credentials
         self.options = options or IpatOptions()
         self.clock = clock
+        self._sessions: dict[str, _Session] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def two_phase(self) -> bool:
+        return self.options.confirm == "external"
+
+    def _launch(self, pw):
+        try:
+            launch, context_opts = build_launch_options(self.options)
+        except VoteError:
+            raise
+        try:
+            browser = pw.chromium.launch(**launch)
+        except Exception as e:
+            raise VoteError(f"ブラウザを起動できませんでした（{type(e).__name__}）") from None
+        context = browser.new_context(**context_opts)
+        page = context.new_page()
+        page.set_default_timeout(self.options.step_timeout_ms)
+        return browser, context, page
 
     # ------------------------------------------------------------------ 入口
 
@@ -129,18 +285,10 @@ class BrowserVoter(Voter):
             raise VoteError("Playwright が入っていません（uv sync を実行してください）") from None
 
         o = self.options
+        if self.two_phase:
+            raise VoteError("confirm = \"external\" では prepare / commit を使います（内部エラー）")
         with sync_playwright() as p:
-            try:
-                browser = p.chromium.launch(
-                    headless=o.headless,
-                    channel=None if o.executable_path else o.browser_channel,
-                    executable_path=o.executable_path,
-                )
-            except Exception as e:
-                raise VoteError(f"ブラウザを起動できませんでした（{type(e).__name__}）") from None
-            context = browser.new_context(locale="ja-JP", viewport={"width": 1400, "height": 1000})
-            page = context.new_page()
-            page.set_default_timeout(o.step_timeout_ms)
+            browser, context, page = self._launch(p)
             self._submitted = False
             try:
                 self._login(page)
@@ -296,7 +444,7 @@ class BrowserVoter(Voter):
 
     # ------------------------------------------------------------------ 照合
 
-    def _verify_cart(self, page, bet: ValidatedBet) -> None:
+    def _verify_cart(self, page, bet: ValidatedBet) -> dict[str, Any]:
         rows = page.locator(SEL["cart_rows"])
         if rows.count() != 1:
             raise VoteError(f"購入予定リストの件数が想定と違います（{rows.count()} 件）。購入せずに中止しました")
@@ -326,6 +474,16 @@ class BrowserVoter(Voter):
         total = _yen(page.locator(SEL["cart_total"]).first.inner_text())
         if total != bet.amount:
             raise VoteError(f"購入予定リストの合計金額（{total}円）が買い目（{bet.amount}円）と一致しないため中止しました")
+        return {
+            "course": course_name,
+            "weekday": wd,
+            "race_number": race.number,
+            "bet_type": TYPE_LABEL[bet.bet_type],
+            "horses": combo,
+            "amount": int(unit_val) * 100,
+            "total": total,
+            "screen_text": text,
+        }
 
     def _open_confirm_dialog(self, page, bet: ValidatedBet) -> None:
         total_input = page.locator(SEL["cart_total_input"]).first
@@ -400,17 +558,149 @@ class BrowserVoter(Voter):
     # ------------------------------------------------------------------ 調査用の画面保存
 
 
-    def _save_debug(self, page, kind: str) -> None:
-        """失敗時・完了時の画面を加工して保存する（認証情報・残高などは消す）。"""
+    def _save_debug(self, page, kind: str) -> str | None:
+        """失敗時・完了時の画面を加工して保存する（認証情報・残高などは消す）。保存先を返す。"""
         if self.options.debug_dir is None:
-            return
+            return None
         try:
             from tools.capture_ipat import save_screen
 
             frames = [(f"0.{i}", fr.url, fr.content()) for i, fr in enumerate(page.frames)]
-            save_screen(frames, self.options.debug_dir / datetime.now().strftime("%Y%m%d_%H%M%S"), 1, kind)
+            d = save_screen(frames, self.options.debug_dir / datetime.now().strftime("%Y%m%d_%H%M%S_%f"), 1, kind)
+            return str(d)
         except Exception:
             logger.exception("ipat: failed to save debug screen")
+            return None
+
+    # ------------------------------------------------------------------ 二段階投票（confirm = "external"）
+
+    def prepare(self, bet: ValidatedBet, pending_id: str) -> PreparedVote:
+        """確認ダイアログまで進めて止める。購入はしない。失敗したら VoteError（何も買っていない）。"""
+        with self._lock:
+            if self._sessions:
+                raise VoteError("保留中の買い目があります。先に確定か取り消しをしてください")
+        thread = _BrowserThread()
+        timeout = self.options.step_timeout_ms / 1000 * 20
+
+        def start():
+            try:
+                from playwright.sync_api import sync_playwright
+            except ImportError:
+                raise VoteError("Playwright が入っていません（uv sync を実行してください）") from None
+            pw = sync_playwright().start()
+            try:
+                browser, context, page = self._launch(pw)
+            except BaseException:
+                pw.stop()
+                raise
+            return pw, browser, context, page
+
+        try:
+            pw, browser, context, page = thread.call(start, timeout)
+        except BaseException:
+            thread.stop()
+            raise
+        session = _Session(thread=thread, pw=pw, browser=browser, context=context, page=page, bet=bet)
+
+        def steps():
+            try:
+                self._login(page)
+                self._open_basic_vote(page)
+                self._select_race(page, bet)
+                self._enter_bet(page, bet)
+                cart = self._verify_cart(page, bet)
+                self._open_confirm_dialog(page, bet)
+            except VoteError:
+                self._save_debug(page, "error")
+                raise
+            except Exception as e:
+                self._save_debug(page, "error")
+                logger.exception("ipat: unexpected error in prepare")
+                raise VoteError(f"即PAT の操作中に想定外のエラーが起きたため、購入せずに中止しました（{type(e).__name__}）") from None
+            return PreparedVote(cart=cart, capture_path=self._save_debug(page, "confirm"))
+
+        try:
+            prepared = thread.call(steps, timeout)
+        except BaseException:
+            self._close(session)
+            raise
+        with self._lock:
+            self._sessions[pending_id] = session
+        return prepared
+
+    def commit(self, pending_id: str) -> VoteReceipt:
+        """保留中の確認ダイアログで「OK」を押す。押す前の失敗は VoteError、押した後は例外を出さない。"""
+        with self._lock:
+            session = self._sessions.pop(pending_id, None)
+        if session is None:
+            raise VoteError("保留中の確認画面が残っていません（期限切れか、サーバの再起動）。購入していません")
+        page = session.page
+
+        def do():
+            dialog = page.locator(SEL["dialog"]).first
+            body = page.locator(SEL["dialog_body"]).first
+            if not dialog.is_visible() or CONFIRM_TEXT not in body.inner_text():
+                raise VoteError("即PAT の確認画面が閉じていたため、購入していません")
+            session.submitted = True
+            page.locator(SEL["dialog_ok"]).first.click()
+            if not self._wait_result(page, timeout_sec=self.options.result_timeout_sec):
+                self._save_debug(page, "unconfirmed")
+                return VoteReceipt(receipt="UNCONFIRMED", dry_run=False, confirmed=False)
+            return self._read_receipt(page)
+
+        try:
+            return session.thread.call(do, self.options.result_timeout_sec + 60)
+        except VoteError:
+            if session.submitted:  # 念のため（OK を押した後は VoteError を出さない）
+                return VoteReceipt(receipt="UNCONFIRMED", dry_run=False, confirmed=False)
+            raise
+        except BaseException:
+            if session.submitted:
+                logger.exception("ipat: error after submit (external)")
+                return VoteReceipt(receipt="UNCONFIRMED", dry_run=False, confirmed=False)
+            logger.exception("ipat: error before submit (external)")
+            raise VoteError("即PAT の操作中にエラーが起きたため、購入していません") from None
+        finally:
+            self._close(session)
+
+    def abort(self, pending_id: str) -> None:
+        """保留を破棄する（確認ダイアログでキャンセルして閉じる）。購入はしない。"""
+        with self._lock:
+            session = self._sessions.pop(pending_id, None)
+        if session is None:
+            return
+
+        def do():
+            cancel = session.page.locator(SEL["dialog_cancel"]).first
+            if cancel.count() and cancel.is_visible():
+                cancel.click()
+
+        try:
+            session.thread.call(do, 30)
+        except BaseException:
+            logger.exception("ipat: failed to cancel dialog (closing browser anyway)")
+        finally:
+            self._close(session)
+
+    def has_pending(self, pending_id: str) -> bool:
+        with self._lock:
+            return pending_id in self._sessions
+
+    @staticmethod
+    def _close(session: _Session) -> None:
+        def do():
+            for closer in (session.context.close, session.browser.close, session.pw.stop):
+                try:
+                    closer()
+                except Exception:
+                    pass
+
+        try:
+            session.thread.call(do, 60)
+        except BaseException:
+            logger.exception("ipat: failed to close browser")
+        finally:
+            session.thread.stop()
 
 
 def build_browser_voter(config) -> BrowserVoter:
@@ -425,5 +715,8 @@ def build_browser_voter(config) -> BrowserVoter:
             browser_channel=config.browser_channel,
             manual_confirm_timeout_sec=config.browser_manual_confirm_timeout_sec,
             debug_dir=config.browser_debug_dir,
+            proxy_server=config.browser_proxy_server,
+            tls_ca_file=config.browser_tls_ca_file,
+            ignore_https_errors=config.browser_ignore_https_errors,
         ),
     )

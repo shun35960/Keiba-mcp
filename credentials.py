@@ -76,9 +76,42 @@ def _bws_error_summary(stderr: str, token: str) -> str:
     return line[:200]
 
 
+def resolve_bws_token(
+    service: str,
+    account: str,
+    *,
+    token_file: str | os.PathLike | None = None,
+    runner: Runner = subprocess.run,
+) -> str:
+    """bws のアクセストークンを、環境変数 BWS_ACCESS_TOKEN → token_file → macOS キーチェーンの順で探す。
+
+    前の手段で見つかれば、後の手段は試さない（キーチェーンの無い Linux でも、環境変数・ファイルで動く）。
+    """
+    token = os.environ.get("BWS_ACCESS_TOKEN", "").strip()
+    if token:
+        return token
+    if token_file:
+        return _read_token_file(token_file)
+    return keychain_token(service, account, runner=runner)
+
+
+def _read_token_file(token_file: str | os.PathLike) -> str:
+    path = os.fspath(token_file)
+    try:
+        with open(path, encoding="utf-8") as f:
+            token = f.read().strip()
+    except OSError as e:
+        raise CredentialError(f"bws のアクセストークンのファイルを読めませんでした（{path}、{type(e).__name__}）") from None
+    except UnicodeDecodeError:
+        raise CredentialError(f"bws のアクセストークンのファイルの文字コードが不正です（{path}）") from None
+    if not token:
+        raise CredentialError(f"bws のアクセストークンのファイルが空です（{path}）")
+    return token
+
+
 def keychain_token(service: str, account: str, *, runner: Runner = subprocess.run) -> str:
     """macOS キーチェーンから bws のアクセストークンを読む。環境変数 BWS_ACCESS_TOKEN があればそちらを優先。"""
-    token = os.environ.get("BWS_ACCESS_TOKEN")
+    token = os.environ.get("BWS_ACCESS_TOKEN", "").strip()
     if token:
         return token
     try:
@@ -88,6 +121,11 @@ def keychain_token(service: str, account: str, *, runner: Runner = subprocess.ru
             text=True,
             timeout=30,
         )
+    except FileNotFoundError:
+        raise CredentialError(
+            "macOS キーチェーンを使えない環境です。環境変数 BWS_ACCESS_TOKEN か、"
+            "config.toml の credentials.bitwarden.token_file でアクセストークンを指定してください"
+        ) from None
     except (OSError, subprocess.TimeoutExpired) as e:
         raise CredentialError(f"キーチェーンを読めませんでした（{type(e).__name__}）") from None
     if p.returncode != 0 or not p.stdout.strip():
@@ -162,7 +200,9 @@ def build_credential_provider(config) -> CredentialProvider:
         return EnvCredentialProvider()
     return BitwardenCredentialProvider(
         config.bws_secret_ids,
-        lambda: keychain_token(config.bws_keychain_service, config.bws_keychain_account),
+        lambda: resolve_bws_token(
+            config.bws_keychain_service, config.bws_keychain_account, token_file=config.bws_token_file
+        ),
         bws_path=config.bws_path,
     )
 

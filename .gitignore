@@ -14,3 +14,6 @@ db.sqlite
 # 認証情報（絶対にコミットしない）
 .env
 .env.*
+
+# 即PAT の画面保存（tools/capture_ipat.py）。JRA のページなのでリポジトリに入れない
+captures/

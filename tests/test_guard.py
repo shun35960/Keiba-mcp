@@ -391,3 +391,48 @@ def test_repository_config_matches_decided_limits():
     g = load_config().guard
     assert (g.per_race_limit, g.weekly_limit, g.loss_stop_threshold, g.bet_unit) == (500, 1000, 3000, 100)
     assert g.allowed_race_numbers == frozenset({11})
+
+
+# ---------------------------------------------------------------- 実投票の結果の扱い
+
+
+def test_vote_error_is_not_recorded_and_reason_shown(make_service):
+    from voter.base import VoteError
+
+    class Aborting(Voter):
+        def vote(self, bet):
+            raise VoteError("購入予定リストに既に買い目が入っています")
+
+    service = make_service(voter=Aborting())
+    r = bet(service)
+    assert r["accepted"] is False and "既に買い目" in r["reason"]
+    assert count_bets(service, "accepted") == 0
+    assert service.db.halted_reason() is None
+
+
+def test_unconfirmed_vote_is_recorded_and_halts(make_service):
+    from voter.base import VoteReceipt
+
+    class Unconfirmed(Voter):
+        def vote(self, bet):
+            return VoteReceipt(receipt="UNCONFIRMED", dry_run=False, confirmed=False)
+
+    service = make_service(voter=Unconfirmed(), weekly_limit=10000)
+    r = bet(service, amount=200)
+    assert r["accepted"] is True and r["confirmed"] is False and "停止" in r["warning"]
+    assert count_bets(service, "accepted") == 1  # 損失として数えたまま
+    r2 = bet(service, race_id=SAT_MAIN_KYOTO)
+    assert r2["accepted"] is False and "成立を確認できない" in r2["reason"]
+    # 人間が確認して再開すれば投票できる
+    service.db.replenish("投票履歴を確認済み")
+    service.voter = __import__("voter.dry_run", fromlist=["DryRunVoter"]).DryRunVoter()
+    assert bet(service, race_id=SAT_MAIN_KYOTO)["accepted"] is True
+
+
+def test_repository_config_is_dry_run_by_default():
+    """リポジトリの既定はドライラン。実購入は人間が config.toml を書き換えたときだけ。"""
+    from config import load_config
+
+    cfg = load_config()
+    assert cfg.voter_mode == "dry_run"
+    assert cfg.browser_confirm == "manual"

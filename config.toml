@@ -32,8 +32,21 @@ user_agent = "keiba-mcp (personal use)"
 instant_results = false
 
 [voter]
-# 投票方式: "dry_run"（記録だけ）。"browser" はスタブで、使用不可
+# 投票方式: "dry_run"（記録だけ。実際には買わない）または "browser"（即PAT で実際に購入する）
+# 実際に購入するのは、人間がここを "browser" に書き換えたときだけ
 mode = "dry_run"
+
+[voter.browser]
+# 最後の「OK」（購入確定）を誰が押すか: "manual"（人間が押す。既定）または "auto"（プログラムが押す）
+confirm = "manual"
+# 人間が OK を押すのを待つ時間（秒）。過ぎたらキャンセルする
+manual_confirm_timeout_sec = 180
+# 使うブラウザ: "chrome"（インストール済みの Google Chrome）または ""（Playwright の Chromium）
+browser_channel = "chrome"
+# 画面を表示せずに動かすか（manual のときは false 固定）
+headless = false
+# 失敗時・完了時の画面（加工済み）の保存先。config.toml からの相対パス
+debug_dir = "captures/voter"
 
 [credentials]
 # ネット投票の認証情報の取得元: "bitwarden"（Bitwarden Secrets Manager）または "env"（環境変数 KEIBA_INET_ID など）

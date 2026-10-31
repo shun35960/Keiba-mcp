@@ -48,7 +48,12 @@ class Guard:
         """
         if self.db.halted_reason() is None and self.db.loss_since_replenish() >= self.config.loss_stop_threshold:
             self.db.set_halted("累計損失が停止ラインに達したため自動停止")
-        if self.db.halted_reason() is not None:
+        reason = self.db.halted_reason()
+        if reason is not None:
+            if "確認できない" in reason:
+                raise GuardRejection(
+                    "成立を確認できない投票があるため、投票は自動停止中です。人間が即PAT の投票履歴を確認して再開するまで、投票はすべて拒否されます。"
+                )
             raise GuardRejection(
                 "累計損失が停止ラインに達したため、投票は自動停止中です。人間が補充して再開するまで、投票はすべて拒否されます。"
             )

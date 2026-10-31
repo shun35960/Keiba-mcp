@@ -1,0 +1,9 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>ログイン</title></head><body>
+<form name="FORM4">
+<input type="text" name="i"><input type="password" name="p"><input type="text" name="r">
+<a href="#" title="ネット投票メニューへ" onclick="
+  sessionStorage.setItem('i', document.querySelector('[name=i]').value);
+  sessionStorage.setItem('p', document.querySelector('[name=p]').value);
+  sessionStorage.setItem('r', document.querySelector('[name=r]').value);
+  location.href = (new URLSearchParams(location.search).get('notice') ? 'notice.html' : 'menu.html') + location.search; return false;">ネット投票メニューへ</a>
+</form></body></html>

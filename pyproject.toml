@@ -10,6 +10,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+capture = [
+    "playwright>=1.64.1",
+]
 dev = [
     "pytest>=9.2.0",
 ]

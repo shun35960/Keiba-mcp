@@ -158,6 +158,22 @@ uv run report.py --settle               # 未精算を精算してから全期�
 uv run report.py --since 2026-11-01     # 期間を指定
 ```
 
+## 即PAT の画面保存（ステップ8の準備・開発用）
+
+全自動投票を作るために、即PAT の各画面の構造をあなたの Mac で保存する。
+
+```bash
+uv sync --group capture
+uv run --group capture playwright install chromium   # 初回だけ（--chrome で Google Chrome を使うなら不要）
+uv run --group capture tools/capture_ipat.py         # Google Chrome を使う場合は --chrome
+```
+
+- ブラウザが開くので、ログインと画面の移動は**自分の手で**行う。スクリプトはクリックも入力もしない
+- 保存したい画面を表示したら、ターミナルで画面の名前を入れて Enter。何も入れずに Enter で終了
+- 保存前に、入力欄の値・hidden の値・インラインスクリプト・URL のクエリを消し、4桁以上の数字を伏せる。スクリーンショットは撮らない
+- 保存先は `captures/`（.gitignore 済み）。共有する前に `summary.txt` などを見て、気になる情報は消す
+- **最終確認画面では購入ボタンを押さない**
+
 ## 注意事項
 
 - スクレイピング・自動投票は、対象サービスの規約で禁止・制限されている可能性がある。実装前に必ず規約を確認する

@@ -311,3 +311,83 @@ def test_only_validated_bets_reach_voter(make_service):
     assert calls == []
     bet(service, amount=100)
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------- 補充（人間による停止の解除）
+
+
+def _lose(service, race_id, amount):
+    """外れ馬に投票して精算し、損失を作る。"""
+    res = service.data.get_result(race_id)
+    loser = next(n for n in runners(service, race_id) if n not in res.order[:3])
+    r = bet(service, race_id=race_id, horses=[loser], amount=amount)
+    assert r["accepted"], r
+    service.get_race_result(race_id)
+
+
+def test_replenish_resumes_and_resets_baseline(make_service, clock):
+    service = make_service(per_race_limit=100000, weekly_limit=100000, loss_stop_threshold=1000)
+    _lose(service, SAT_MAIN, 1000)
+    assert "自動停止中" in bet(service, race_id=SAT_MAIN_KYOTO)["reason"]
+
+    baseline = service.db.replenish("1000円補充")
+    assert baseline == 1000
+    assert service.db.halted_reason() is None
+    assert service.db.loss_since_replenish() == 0
+    assert service.db.cumulative_loss() == 1000
+
+    # 補充後は、また停止ラインまで投票できる
+    assert bet(service, race_id=SAT_MAIN_KYOTO, amount=1000)["accepted"]
+    assert "停止ライン" in bet(service, race_id=SUN_MAIN, amount=100)["reason"]
+
+
+def test_replenish_history(service):
+    service.db.replenish("a")
+    service.db.replenish("b")
+    assert [r["note"] for r in service.db.replenishment_history()] == ["a", "b"]
+
+
+def test_ai_cannot_replenish_via_mcp(service):
+    import asyncio
+
+    from mcp.client.client import Client
+    from server import create_server
+
+    async def tools():
+        async with Client(create_server(service)) as c:
+            return {t.name for t in (await c.list_tools()).tools}
+
+    names = asyncio.run(tools())
+    assert not any(k in n for n in names for k in ("replenish", "resume", "halt", "config", "admin"))
+
+
+def test_admin_cli(tmp_path, monkeypatch, capsys):
+    import admin
+    from tests.conftest import make_config
+
+    cfg = make_config(tmp_path, loss_stop_threshold=3000)
+    monkeypatch.setattr(admin, "load_config", lambda: cfg)
+    from db import Database
+
+    db = Database(cfg.db_path)
+    db.set_halted("test")
+    db.close()
+
+    assert admin.main(["status"]) == 0
+    assert "停止中" in capsys.readouterr().out
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: False})())
+    assert admin.main(["resume"]) == 1  # 確認できないので中止
+    assert admin.main(["resume", "--yes", "--note", "補充"]) == 0
+    assert admin.main(["status"]) == 0
+    assert "受付中" in capsys.readouterr().out
+    assert admin.main(["history"]) == 0
+    assert "補充" in capsys.readouterr().out
+
+
+def test_repository_config_matches_decided_limits():
+    """config.toml の値はユーザーが決めたもの（1レース500円・週1000円・損失3000円で停止・11Rのみ）。"""
+    from config import load_config
+
+    g = load_config().guard
+    assert (g.per_race_limit, g.weekly_limit, g.loss_stop_threshold, g.bet_unit) == (500, 1000, 3000, 100)
+    assert g.allowed_race_numbers == frozenset({11})

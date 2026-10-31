@@ -42,12 +42,15 @@ class Guard:
         self.db = db
 
     def check_halt(self) -> None:
-        """停止中なら拒否。累計損失が閾値に達していれば停止状態にしてから拒否する（以後ずっと拒否）。"""
-        if self.db.halted_reason() is None and self.db.cumulative_loss() >= self.config.loss_stop_threshold:
+        """停止中なら拒否。損失（最後の補充以降）が停止ラインに達していれば停止状態にしてから拒否する。
+
+        停止は人間が補充（admin.py resume）するまで続く。
+        """
+        if self.db.halted_reason() is None and self.db.loss_since_replenish() >= self.config.loss_stop_threshold:
             self.db.set_halted("累計損失が停止ラインに達したため自動停止")
         if self.db.halted_reason() is not None:
             raise GuardRejection(
-                "累計損失が停止ラインに達したため、投票は自動停止中です。以後の投票はすべて拒否されます（解除は人間が行います）。"
+                "累計損失が停止ラインに達したため、投票は自動停止中です。人間が補充して再開するまで、投票はすべて拒否されます。"
             )
 
     def validate(
@@ -126,7 +129,7 @@ class Guard:
             raise GuardRejection("今週（火〜月）の上限額を超えるため拒否しました。金額を減らすか見送ってください。")
 
         # 8. 損失の停止ライン：この投票が全額外れても停止ラインを超えないこと
-        if self.db.cumulative_loss() + amount > cfg.loss_stop_threshold:
+        if self.db.loss_since_replenish() + amount > cfg.loss_stop_threshold:
             raise GuardRejection("この投票が外れると累計損失が停止ラインを超えるため拒否しました。")
 
         return ValidatedBet(

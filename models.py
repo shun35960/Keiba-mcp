@@ -140,11 +140,44 @@ def week_start(d: date) -> date:
 
 
 @dataclass(frozen=True)
+class PastRace:
+    """近走成績（出馬表の馬柱）。"""
+
+    date: str
+    course: str
+    race_name: str
+    place: str  # 着順（「中止」などの文字の場合もある）
+    field_size: int | None
+    popularity: int | None
+    jockey: str
+    weight: float | None  # 斤量
+    distance: str  # 例: 1800ダ
+    time: str
+    condition: str  # 馬場状態
+    horse_weight: int | None
+    corners: tuple[int, ...]
+    last_3f: str
+    winner_or_second: str  # 勝ち馬（自身が勝った場合は2着馬）と着差
+
+
+@dataclass(frozen=True)
 class Horse:
     number: int
     name: str
     jockey: str
     scratched: bool = False
+    frame: int | None = None  # 枠番
+    sex_age: str = ""  # 例: 牡3
+    weight: float | None = None  # 斤量（負担重量）
+    trainer: str = ""
+    horse_weight: int | None = None  # 馬体重
+    horse_weight_diff: int | None = None
+    win_odds: float | None = None
+    popularity: int | None = None
+    sire: str = ""
+    dam: str = ""
+    dam_sire: str = ""
+    past_races: tuple[PastRace, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -159,6 +192,7 @@ class Race:
     distance: int
     post_time: datetime  # JST
     horses: tuple[Horse, ...]
+    race_class: str = ""  # 例: 3歳以上 オープン ハンデ
 
     def runner_numbers(self) -> set[int]:
         """出走する（取消・除外でない）馬番。"""
@@ -171,6 +205,8 @@ class RaceResult:
     order: tuple[int, ...]  # 着順（1着から）
     # 券種コード -> {正規化キー: 100円あたり払戻金}
     payouts: dict[str, dict[str, int]] = field(default_factory=dict)
+    # 出走取消・競走除外の馬番。これらを含む買い目は返還（払戻＝投票額）
+    refunded_horses: frozenset[int] = frozenset()
 
     def payout_per_100(self, bet_type: BetType, horses: tuple[int, ...] | list[int]) -> int:
         """的中なら100円あたり払戻金、外れなら0。"""

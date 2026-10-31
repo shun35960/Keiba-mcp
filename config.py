@@ -26,6 +26,9 @@ class AppConfig:
     dummy_instant_results: bool
     voter_mode: str
     db_path: Path
+    jra_request_interval: float = 3.0
+    jra_cache_path: Path = Path("cache.sqlite")
+    jra_user_agent: str = "keiba-mcp (personal use)"
 
 
 def _positive_int(section: dict, key: str) -> int:
@@ -60,10 +63,21 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
     if not db_path.is_absolute():
         db_path = p.parent / db_path
 
+    jra = data.get("jra", {})
+    interval = jra.get("request_interval_sec", 3)
+    if not isinstance(interval, (int, float)) or isinstance(interval, bool) or interval < 1:
+        raise ValueError("config.toml: data.jra.request_interval_sec は 1 秒以上で指定してください（取得元に負荷をかけないため）")
+    cache_path = Path(jra.get("cache_path", "cache.sqlite"))
+    if not cache_path.is_absolute():
+        cache_path = p.parent / cache_path
+
     return AppConfig(
         guard=guard,
         data_source=data.get("source", "dummy"),
         dummy_instant_results=bool(data.get("dummy", {}).get("instant_results", False)),
         voter_mode=voter.get("mode", "dry_run"),
         db_path=db_path,
+        jra_request_interval=float(interval),
+        jra_cache_path=cache_path,
+        jra_user_agent=str(jra.get("user_agent", "keiba-mcp (personal use)")),
     )

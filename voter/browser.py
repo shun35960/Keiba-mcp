@@ -80,6 +80,7 @@ SEL = {
     "type_select": "select#bet-basic-type",
     "method_select": "select#bet-basic-method",
     "unit": "input[ng-model='vm.nUnit']",
+    "loading": "div.ipat-loading",
     "set": "button[ng-click='vm.onSet()']",
     "finish_input": "button[ng-click='vm.onShowBetList()']",
     # 購入予定リスト
@@ -438,9 +439,12 @@ class BrowserVoter(Voter):
 
     def _tick(self, page, element_id: str) -> None:
         # 本物の即PAT：<label for="no1"><input type="checkbox" id="no1" ...><span class="check"></span></label>
-        # （馬単・３連単は id="horse{着順}_no{馬番}" のラジオボタン）。input 自体は見えず、label を押して選ぶ。
+        # （馬単・３連単は id="horse{着順}_no{馬番}" のラジオボタン）。input 自体は見えない。
         # 出馬表の行は券種・レースを選んだ後に遅れて描画され、券種の切り替え中は古い表が残ることがあるので、
         # 見えている label が現れるまで待ち、ちょうど1つであることを確かめる。
+        # 読み込み中の表示（div.ipat-loading）が消える前に選ぶと、行が描き直されて選択が消えうるので待つ。
+        # マウスでの押下は固定のナビバーやセル自体に遮られる（2026-11-01 の ipat-check で確認）ため、
+        # input に click イベントを直接送る（checkbox・radio とも、これで選択と Angular への通知が起きる）。
         label = page.locator(f"label[for='{element_id}']:visible")
         try:
             label.first.wait_for(state="visible")
@@ -448,6 +452,12 @@ class BrowserVoter(Voter):
             raise VoteError(
                 f"即PAT の馬番の選択欄（{element_id}）が見つかりませんでした（出馬表が表示されない・出走していない馬番の可能性）"
             ) from None
+        # 行と一緒に読み込み中の表示が出ることがあるので、行が出てから消えるのを待つ
+        try:
+            page.locator(SEL["loading"]).first.wait_for(state="hidden")
+            label.first.wait_for(state="visible")
+        except Exception:
+            raise VoteError("即PAT の読み込み中の表示が消えないため、馬番を選べませんでした") from None
         if label.count() != 1:
             raise VoteError(f"即PAT の馬番の選択欄（{element_id}）が複数見つかりました。画面の構造が変わった可能性があります")
         inp = page.locator(f"input#{element_id}")
@@ -455,7 +465,8 @@ class BrowserVoter(Voter):
             raise VoteError(f"即PAT の馬番の選択欄（{element_id}）が見つかりませんでした")
         if inp.is_disabled():
             raise VoteError(f"即PAT で馬番（{element_id}）が選べません（取消・除外の可能性）")
-        label.first.click()
+        if not inp.is_checked():
+            inp.dispatch_event("click")
         if not inp.is_checked():
             raise VoteError(f"即PAT で馬番（{element_id}）を選択できませんでした")
 

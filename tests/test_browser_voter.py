@@ -193,6 +193,23 @@ def test_waits_for_horse_rows_rendered_late(bet_type, horses, expected):
     assert snap["purchases"][0][0]["horses"] == expected
 
 
+@pytest.mark.parametrize(
+    "query", ["?covered=1", "?loading=1500", "?horsedelay=500&loading=1500&covered=1"],
+)
+@pytest.mark.parametrize(
+    "bet_type,horses,expected",
+    [(BetType.QUINELLA, (7, 2), [2, 7]), (BetType.TRIFECTA, (8, 1, 4), [8, 1, 4])],
+)
+def test_ticks_horse_despite_real_site_obstacles(query, bet_type, horses, expected):
+    # 本物の即PAT では、ラベルの押下がセルやナビバーに遮られ、読み込み中の表示が消えると行が描き直される
+    # （2026-11-01 の ipat-check で確認）
+    v = voter(query)
+    receipt = v.vote(vbet(bet_type, horses))
+    assert receipt.confirmed
+    (snap,) = v.snapshots
+    assert snap["purchases"][0][0]["horses"] == expected
+
+
 def test_abort_when_horse_rows_never_appear():
     v = voter(step_timeout_ms=1500)
     with pytest.raises(VoteError, match="馬番の選択欄（no13）が見つかりませんでした"):

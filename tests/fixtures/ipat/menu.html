@@ -1,6 +1,8 @@
 <!doctype html><html lang="ja"><head><meta charset="utf-8"><title>投票メニュー</title>
 <style>.ng-hide{display:none !important} .check{display:inline-block;width:14px;height:14px;border:1px solid #888}
-input[type=checkbox],input[type=radio]{opacity:0;position:absolute}</style></head><body>
+input[type=checkbox],input[type=radio]{opacity:0;position:absolute}
+.ipat-loading{position:fixed;inset:0;background:rgba(255,255,255,.5)}
+.covered td.racer-first{position:relative} .covered td.racer-first::after{content:'';position:absolute;inset:0}</style></head><body>
 <div id="menu">
   <button class="btn-vote-list" ng-click="vm.toggleBetList()">リスト<span id="badge"></span></button>
   <button href="#!/bet/basic" title="出馬表から馬を選択する方式です。" onclick="showVote()">通常 投票</button>
@@ -82,14 +84,23 @@ function fillHorses(ordered){
     const dis = SCRATCHED.includes(n) ? ' disabled' : '';
     if (ordered) {
       h += '<tr><td>'+n+'</td>';
-      for (let k = 1; k <= ordered; k++) h += '<td><label for="horse'+k+'_no'+n+'"><input type="radio" name="pos'+k+'" id="horse'+k+'_no'+n+'" value="'+n+'"'+dis+'><span class="check"></span></label></td>';
+      for (let k = 1; k <= ordered; k++) h += '<td class="racer-first"><label for="horse'+k+'_no'+n+'"><input type="radio" name="pos'+k+'" id="horse'+k+'_no'+n+'" value="'+n+'"'+dis+'><span class="check"></span></label></td>';
       h += '</tr>';
     } else {
-      h += '<tr><td>'+n+'</td><td><label for="no'+n+'"><input type="checkbox" id="no'+n+'" name="racer'+n+'"'+dis+'><span class="check"></span></label></td></tr>';
+      h += '<tr><td>'+n+'</td><td class="racer-first"><label for="no'+n+'"><input type="checkbox" id="no'+n+'" name="racer'+n+'"'+dis+'><span class="check"></span></label></td></tr>';
     }
   }
   $('horses').innerHTML = h;
+  // 本物と同じく、読み込み中の表示が消えるときに行が描き直される（?loading=ミリ秒。描き直しで選択は消える）
+  const loading = +(Q.get('loading') || 0);
+  if (loading && !document.querySelector('.ipat-loading')) {
+    const d = document.createElement('div'); d.className = 'ipat-loading'; document.body.appendChild(d);
+    // 描き直すのはその時点の券種の表（innerHTML を入れ直すので選択は消える）
+    setTimeout(() => { d.remove(); const cur = $('horses').innerHTML; $('horses').innerHTML = ''; $('horses').innerHTML = cur; }, loading);
+  }
 }
+// 本物と同じく、ラベルを押そうとしてもセル（td）が押下を受け取ってしまう（?covered=1）
+if (Q.get('covered')) document.body.classList.add('covered');
 function picked(){
   const t = curType(), ordered = {'馬単':2, '３連単':3}[t] || 0;
   if (ordered) { const r = []; for (let k = 1; k <= ordered; k++) { const x = document.querySelector('input[name=pos'+k+']:checked'); if (x) r.push(+x.value); } return r; }

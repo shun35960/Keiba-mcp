@@ -470,8 +470,13 @@ class BrowserVoter(Voter):
         if label.count() != 1:
             raise VoteError(f"即PAT の馬番の選択欄（{element_id}）が複数見つかりました。画面の構造が変わった可能性があります")
         inp = page.locator(f"input#{element_id}")
+        # 即PAT は式別を選んだ後、少し遅れて馬番の表を描く。現れるまで待つ
+        try:
+            inp.first.wait_for(state="attached")
+        except Exception:
+            raise VoteError(f"即PAT の馬番の選択欄（{element_id}）が見つかりませんでした") from None
         if inp.count() != 1:
-            raise VoteError(f"即PAT の馬番の選択欄（{element_id}）が見つかりませんでした")
+            raise VoteError(f"即PAT の馬番の選択欄（{element_id}）が {inp.count()} 個あり、特定できませんでした")
         if inp.is_disabled():
             raise VoteError(f"即PAT で馬番（{element_id}）が選べません（取消・除外の可能性）")
         if not inp.is_checked():

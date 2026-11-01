@@ -180,6 +180,62 @@ def test_abort_on_scratched_horse():
     _assert_not_bought(v)
 
 
+@pytest.mark.parametrize(
+    "bet_type,horses,expected",
+    [(BetType.WIN, (3,), [3]), (BetType.TRIO, (8, 1, 4), [1, 4, 8]), (BetType.TRIFECTA, (8, 1, 4), [8, 1, 4])],
+)
+def test_waits_for_horse_rows_rendered_late(bet_type, horses, expected):
+    # 本物の即PAT では出馬表の行が券種の部品より遅れて描画される（2026-11-01 の ipat-check で確認）
+    v = voter("?horsedelay=1500")
+    receipt = v.vote(vbet(bet_type, horses))
+    assert receipt.confirmed
+    (snap,) = v.snapshots
+    assert snap["purchases"][0][0]["horses"] == expected
+
+
+@pytest.mark.parametrize(
+    "query", ["?covered=1", "?loading=1500", "?horsedelay=500&loading=1500&covered=1"],
+)
+@pytest.mark.parametrize(
+    "bet_type,horses,expected",
+    [(BetType.QUINELLA, (7, 2), [2, 7]), (BetType.TRIFECTA, (8, 1, 4), [8, 1, 4])],
+)
+def test_ticks_horse_despite_real_site_obstacles(query, bet_type, horses, expected):
+    # 本物の即PAT では、ラベルの押下がセルやナビバーに遮られ、読み込み中の表示が消えると行が描き直される
+    # （2026-11-01 の ipat-check で確認）
+    v = voter(query)
+    receipt = v.vote(vbet(bet_type, horses))
+    assert receipt.confirmed
+    (snap,) = v.snapshots
+    assert snap["purchases"][0][0]["horses"] == expected
+
+
+@pytest.mark.parametrize("bet_type,horses,expected", [(BetType.WIN, (3,), [3]), (BetType.EXACTA, (7, 2), [7, 2])])
+def test_waits_for_cart_loaded_late(bet_type, horses, expected):
+    # 本物の即PAT では購入予定リストの中身が読み込み中の表示の後に遅れて届く（2026-11-01 の ipat-check で確認）
+    v = voter("?cartdelay=1500&horsedelay=500&loading=1000&covered=1")
+    receipt = v.vote(vbet(bet_type, horses, amount=200))
+    assert receipt.confirmed
+    (snap,) = v.snapshots
+    (item,) = snap["purchases"][0]
+    assert item["horses"] == expected and item["unit"] == 2
+
+
+def test_cart_loaded_late_in_two_phase():
+    v = voter("?cartdelay=1500", confirm="external")
+    prepared = v.prepare(vbet(BetType.TRIO, (8, 1, 4)), "p1")
+    v.abort("p1")
+    assert prepared.cart["horses"] == [1, 4, 8]
+    _assert_not_bought(v)
+
+
+def test_abort_when_horse_rows_never_appear():
+    v = voter(step_timeout_ms=1500)
+    with pytest.raises(VoteError, match="馬番の選択欄（no13）が見つかりませんでした"):
+        v.vote(vbet(horses=(13,)))
+    _assert_not_bought(v)
+
+
 def test_abort_on_notice_screen():
     v = voter("?notice=1")
     with pytest.raises(VoteError, match="約定"):

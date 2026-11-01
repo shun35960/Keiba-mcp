@@ -266,3 +266,16 @@ def test_external_end_to_end_through_service(make_service, clock):
     assert r["confirmation_screen"]["horses"] == [2, 7]
     c = service.confirm_vote(r["pending_id"])
     assert c["confirmed"] is True and c["receipt"] == "IPAT-0042"
+
+
+def test_unexpected_error_message_names_the_step(monkeypatch):
+    """想定外のエラーでは、どの手順で止まったかをメッセージに入れる（画面の変化を調べやすくする）。"""
+    v = voter()
+
+    def boom(page, bet):
+        v._step = "場・レースの選択"
+        raise TimeoutError("simulated")
+
+    monkeypatch.setattr(v, "_select_race", boom)
+    with pytest.raises(VoteError, match="「場・レースの選択」で想定外のエラー"):
+        v.vote(vbet())

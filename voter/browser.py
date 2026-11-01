@@ -308,7 +308,7 @@ class BrowserVoter(Voter):
                     return VoteReceipt(receipt="UNCONFIRMED", dry_run=False, confirmed=False)
                 self._save_debug(page, "error")
                 logger.exception("ipat: unexpected error before submit")
-                raise VoteError(f"即PAT の操作中に想定外のエラーが起きたため、購入せずに中止しました（{type(e).__name__}）") from None
+                raise VoteError(f"即PAT の「{getattr(self, '_step', '?')}」で想定外のエラーが起きたため、購入せずに中止しました（{type(e).__name__}）") from None
             finally:
                 if o.headless or not self._submitted or o.confirm == "auto":
                     context.close()
@@ -330,6 +330,7 @@ class BrowserVoter(Voter):
             raise VoteError(f"認証情報を取り出せませんでした: {e}") from None
 
     def _login(self, page) -> None:
+        self._step = "ログイン"
         page.goto(self.options.base_url)
         inet = page.locator(SEL["inetid"])
         if inet.count() == 0:
@@ -357,12 +358,18 @@ class BrowserVoter(Voter):
     # ------------------------------------------------------------------ レース選択
 
     def _open_basic_vote(self, page) -> None:
+        self._step = "通常投票を開く"
         if page.locator(SEL["cart_badge"]).count() > 0 and page.locator(SEL["cart_badge"]).first.is_visible():
             raise VoteError("即PAT の購入予定リストに既に買い目が入っています。手動で空にしてから再度投票してください")
         page.locator(SEL["basic_vote"]).first.click()
-        page.locator(SEL["type_select"]).first.wait_for(state="attached")
+        # 通常投票の画面では、まず場・レースの選択が出る。式別のプルダウンはレースを選んだ後に初めて現れる
+        try:
+            page.locator(f"{SEL['course_button']}, {SEL['course_select']}").first.wait_for(state="attached")
+        except Exception:
+            raise VoteError("通常投票の画面（場・レースの選択）が表示されませんでした") from None
 
     def _select_race(self, page, bet: ValidatedBet) -> None:
+        self._step = "場・レースの選択"
         race = bet.race
         course_name = COURSE_BY_ALPHA[race.course][1]
         wd = WEEKDAYS[race.date.weekday()]
@@ -405,6 +412,7 @@ class BrowserVoter(Voter):
     # ------------------------------------------------------------------ 券種・馬番・金額
 
     def _enter_bet(self, page, bet: ValidatedBet) -> None:
+        self._step = "券種・馬番・金額の入力"
         bt = bet.bet_type
         type_select = page.locator(SEL["type_select"]).first
         type_select.wait_for(state="visible")
@@ -445,6 +453,7 @@ class BrowserVoter(Voter):
     # ------------------------------------------------------------------ 照合
 
     def _verify_cart(self, page, bet: ValidatedBet) -> dict[str, Any]:
+        self._step = "購入予定リストの照合"
         rows = page.locator(SEL["cart_rows"])
         if rows.count() != 1:
             raise VoteError(f"購入予定リストの件数が想定と違います（{rows.count()} 件）。購入せずに中止しました")
@@ -486,6 +495,7 @@ class BrowserVoter(Voter):
         }
 
     def _open_confirm_dialog(self, page, bet: ValidatedBet) -> None:
+        self._step = "合計金額の入力と確認画面"
         total_input = page.locator(SEL["cart_total_input"]).first
         total_input.fill(str(bet.amount))
         total_input.press("Tab")
@@ -616,7 +626,7 @@ class BrowserVoter(Voter):
             except Exception as e:
                 self._save_debug(page, "error")
                 logger.exception("ipat: unexpected error in prepare")
-                raise VoteError(f"即PAT の操作中に想定外のエラーが起きたため、購入せずに中止しました（{type(e).__name__}）") from None
+                raise VoteError(f"即PAT の「{getattr(self, '_step', '?')}」で想定外のエラーが起きたため、購入せずに中止しました（{type(e).__name__}）") from None
             return PreparedVote(cart=cart, capture_path=self._save_debug(page, "confirm"))
 
         try:

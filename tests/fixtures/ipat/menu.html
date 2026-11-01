@@ -7,16 +7,8 @@ input[type=checkbox],input[type=radio]{opacity:0;position:absolute}</style></hea
 </div>
 <div id="vote" class="ng-hide">
   <div id="courses"></div><div id="races"></div>
-  <label for="bet-basic-type">式別</label>
-  <select id="bet-basic-type" ng-model="vm.oSelectType" onchange="renderHorses()">
-    <option>単勝</option><option>複勝</option><option>枠連</option><option>馬連</option><option>ワイド</option><option>馬単</option><option>３連複</option><option>３連単</option>
-  </select>
-  <span id="method-wrap" class="ng-hide"><select id="bet-basic-method" ng-model="vm.oSelectMethod" onchange="renderHorses()"><option>通常</option><option>ながし</option><option>ボックス</option></select></span>
-  <table><tbody id="horses"></tbody></table>
-  金額 <input type="text" ng-model="vm.nUnit" id="unit">00円
-  <input type="text" ng-model="vm.nUnit" class="ng-hide">
-  <button ng-click="vm.onSet()" onclick="onSet()">セット</button>
-  <button ng-click="vm.onShowBetList()" onclick="showCart()">入力終了</button>
+  <!-- 本物の即PAT と同じく、式別・馬番・金額の部品はレースを選ぶまで存在しない（ng-switch） -->
+  <div id="bet-panel"></div>
 </div>
 <div class="ipat-vote-list ng-hide" id="cart">
   <h1>購入予定リスト</h1>
@@ -58,7 +50,22 @@ function selCourse(c){
   }
   $('races').innerHTML = h;
 }
-function selRace(r){ sel.race = r; renderHorses(); }
+const PANEL = `
+  <label for="bet-basic-type">式別</label>
+  <select id="bet-basic-type" ng-model="vm.oSelectType" onchange="renderHorses()">
+    <option>単勝</option><option>複勝</option><option>枠連</option><option>馬連</option><option>ワイド</option><option>馬単</option><option>３連複</option><option>３連単</option>
+  </select>
+  <span id="method-wrap" class="ng-hide"><select id="bet-basic-method" ng-model="vm.oSelectMethod" onchange="renderHorses()"><option>通常</option><option>ながし</option><option>ボックス</option></select></span>
+  <table><tbody id="horses"></tbody></table>
+  金額 <input type="text" ng-model="vm.nUnit" id="unit">00円
+  <input type="text" ng-model="vm.nUnit" class="ng-hide">
+  <button ng-click="vm.onSet()" onclick="onSet()">セット</button>
+  <button ng-click="vm.onShowBetList()" onclick="showCart()">入力終了</button>`;
+function selRace(r){
+  sel.race = r;
+  // 本物と同じく少し遅れて描画する
+  setTimeout(() => { if (!$('bet-basic-type')) $('bet-panel').innerHTML = PANEL; renderHorses(); }, 300);
+}
 function curType(){ return $('bet-basic-type').value; }
 function renderHorses(){
   const t = curType();

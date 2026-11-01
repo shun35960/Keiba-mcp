@@ -52,10 +52,10 @@ function selCourse(c){
 }
 const PANEL = `
   <label for="bet-basic-type">式別</label>
-  <select id="bet-basic-type" ng-model="vm.oSelectType" onchange="renderHorses()">
+  <select id="bet-basic-type" ng-model="vm.oSelectType" onchange="renderHorsesLater()">
     <option>単勝</option><option>複勝</option><option>枠連</option><option>馬連</option><option>ワイド</option><option>馬単</option><option>３連複</option><option>３連単</option>
   </select>
-  <span id="method-wrap" class="ng-hide"><select id="bet-basic-method" ng-model="vm.oSelectMethod" onchange="renderHorses()"><option>通常</option><option>ながし</option><option>ボックス</option></select></span>
+  <span id="method-wrap" class="ng-hide"><select id="bet-basic-method" ng-model="vm.oSelectMethod" onchange="renderHorsesLater()"><option>通常</option><option>ながし</option><option>ボックス</option></select></span>
   <table><tbody id="horses"></tbody></table>
   金額 <input type="text" ng-model="vm.nUnit" id="unit">00円
   <input type="text" ng-model="vm.nUnit" class="ng-hide">
@@ -64,8 +64,9 @@ const PANEL = `
 function selRace(r){
   sel.race = r;
   // 本物と同じく少し遅れて描画する
-  setTimeout(() => { if (!$('bet-basic-type')) $('bet-panel').innerHTML = PANEL; renderHorses(); }, 300);
+  setTimeout(() => { if (!$('bet-basic-type')) $('bet-panel').innerHTML = PANEL; renderHorsesLater(); }, 300);
 }
+function renderHorsesLater(){ $('horses').innerHTML = ''; setTimeout(renderHorses, 400); }
 function curType(){ return $('bet-basic-type').value; }
 function renderHorses(){
   const t = curType();

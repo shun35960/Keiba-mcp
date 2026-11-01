@@ -86,6 +86,7 @@ SEL = {
     # 購入予定リスト
     "cart": "div.ipat-vote-list",
     "cart_rows": "tr[ng-repeat*='vm.oItems.oaBetData']",
+    "cart_loading": "div.ipat-vote-list .list-loading",
     "cart_total": "span[ng-bind*='getCalcTotalAmount']",
     "cart_total_input": "input[ng-model='vm.cAmountTotal']",
     "purchase": "button[ng-click='vm.clickPurchase()']",
@@ -436,6 +437,14 @@ class BrowserVoter(Voter):
         page.locator(f"{SEL['set']}:visible").first.click()
         page.locator(f"{SEL['finish_input']}:visible").first.click()
         page.locator(SEL["cart"]).first.wait_for(state="visible")
+        # 購入予定リストの中身はサーバから遅れて届く（読み込み中は div.list-loading が出て行が無い。
+        # 2026-11-01 の ipat-check で確認）。行が出て、読み込み中の表示が消えるまで待つ。
+        # 行が出てこないときは待つのをやめ、件数の照合（_verify_cart）で中止する。
+        try:
+            page.locator(f"{SEL['cart_rows']}:visible").first.wait_for(state="visible")
+        except Exception:
+            pass
+        page.locator(SEL["cart_loading"]).first.wait_for(state="hidden")
 
     def _tick(self, page, element_id: str) -> None:
         # 本物の即PAT：<label for="no1"><input type="checkbox" id="no1" ...><span class="check"></span></label>

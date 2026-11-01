@@ -121,8 +121,13 @@ function showCart(){
        + '<td><div class="horse-combi-list">'+it.horses.map(pad).join(sep)+'</div></td>'
        + '<td><input type="text" ng-model="item.unit" value="'+unit+'">00円</td></tr>';
   });
-  $('cart-rows').innerHTML = h;
-  $('total').textContent = total.toLocaleString();
+  // 本物と同じく、リストの中身は読み込み中の表示の後に遅れて届く（?cartdelay=ミリ秒）
+  const delay = +(Q.get('cartdelay') || 0);
+  const fill = () => { $('cart-rows').innerHTML = h; $('total').textContent = total.toLocaleString(); };
+  if (!delay) { fill(); return; }
+  $('cart-rows').innerHTML = ''; $('total').textContent = '0';
+  const d = document.createElement('div'); d.className = 'list-loading'; d.textContent = '読み込み中'; $('cart').appendChild(d);
+  setTimeout(() => { d.remove(); fill(); }, delay);
 }
 let mode = null;
 function showDialog(text, cancel){

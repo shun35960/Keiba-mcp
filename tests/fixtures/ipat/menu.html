@@ -71,6 +71,12 @@ function renderHorses(){
   const t = curType();
   $('method-wrap').classList.toggle('ng-hide', ['単勝','複勝'].includes(t));
   const ordered = {'馬単':2, '３連単':3}[t] || 0;
+  // 本物と同じく、出馬表の行は券種の部品より遅れて描画される（?horsedelay=ミリ秒）
+  const delay = +(Q.get('horsedelay') || 0);
+  if (delay) { $('horses').innerHTML = ''; setTimeout(() => fillHorses(ordered), delay); return; }
+  fillHorses(ordered);
+}
+function fillHorses(ordered){
   let h = '';
   for (let n = 1; n <= N; n++) {
     const dis = SCRATCHED.includes(n) ? ' disabled' : '';

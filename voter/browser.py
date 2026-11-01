@@ -437,16 +437,25 @@ class BrowserVoter(Voter):
         page.locator(SEL["cart"]).first.wait_for(state="visible")
 
     def _tick(self, page, element_id: str) -> None:
+        # 本物の即PAT：<label for="no1"><input type="checkbox" id="no1" ...><span class="check"></span></label>
+        # （馬単・３連単は id="horse{着順}_no{馬番}" のラジオボタン）。input 自体は見えず、label を押して選ぶ。
+        # 出馬表の行は券種・レースを選んだ後に遅れて描画され、券種の切り替え中は古い表が残ることがあるので、
+        # 見えている label が現れるまで待ち、ちょうど1つであることを確かめる。
+        label = page.locator(f"label[for='{element_id}']:visible")
+        try:
+            label.first.wait_for(state="visible")
+        except Exception:
+            raise VoteError(
+                f"即PAT の馬番の選択欄（{element_id}）が見つかりませんでした（出馬表が表示されない・出走していない馬番の可能性）"
+            ) from None
+        if label.count() != 1:
+            raise VoteError(f"即PAT の馬番の選択欄（{element_id}）が複数見つかりました。画面の構造が変わった可能性があります")
         inp = page.locator(f"input#{element_id}")
         if inp.count() != 1:
             raise VoteError(f"即PAT の馬番の選択欄（{element_id}）が見つかりませんでした")
         if inp.is_disabled():
             raise VoteError(f"即PAT で馬番（{element_id}）が選べません（取消・除外の可能性）")
-        label = page.locator(f"label[for='{element_id}']")
-        if label.count() > 0:
-            label.first.click()
-        else:
-            inp.check(force=True)
+        label.first.click()
         if not inp.is_checked():
             raise VoteError(f"即PAT で馬番（{element_id}）を選択できませんでした")
 

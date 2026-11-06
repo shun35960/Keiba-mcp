@@ -77,7 +77,7 @@ async def test_mcp_tools_end_to_end(service):
     async with Client(server) as client:
         tools = {t.name for t in (await client.list_tools()).tools}
         assert tools == {
-            "get_race_card", "get_odds", "place_bet", "get_race_result", "settle_pending_bets", "get_stats",
+            "get_race_card", "get_odds", "get_race_insights", "place_bet", "get_race_result", "settle_pending_bets", "get_stats",
             "confirm_vote", "cancel_vote",
         }
 

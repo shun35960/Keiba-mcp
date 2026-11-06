@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 
@@ -116,15 +117,42 @@ _RACE_CNAME_RE = {
 }
 
 
-def parse_race_links(html: str) -> dict[int, dict[str, str]]:
-    """レース一覧ページから {レース番号: {"card"|"result"|"odds": cname}} を取り出す。
+_GRADE_RE = re.compile(r"(J?)G(I{1,3}|[123])")
+_GRADE_LEVEL = {"I": "1", "II": "2", "III": "3", "1": "1", "2": "2", "3": "3"}
 
-    結果リンクはレース確定後にだけ現れる。
+
+def normalize_grade(alt: str | None) -> str:
+    """grade_icon の alt（GⅠ・J･GⅢ・リステッド など）を Race.grade の値にする。知らない表記は空（格なし扱い）。"""
+    s = re.sub(r"[\s・.]", "", unicodedata.normalize("NFKC", alt or "")).upper()  # NFKC で Ⅱ→II、･→・ になる
+    if s in ("リステッド", "L"):
+        return "L"
+    m = _GRADE_RE.fullmatch(s)
+    return f"{m.group(1)}G{_GRADE_LEVEL[m.group(2)]}" if m else ""
+
+
+def _row_race_number(row: str) -> int | None:
+    for rx in _RACE_CNAME_RE.values():
+        m = rx.search(row)
+        if m:
+            return int(m.group(2))
+    return None
+
+
+def parse_race_links(html: str) -> dict[int, dict[str, str]]:
+    """レース一覧ページから {レース番号: {"card"|"result"|"odds": cname, "grade": 格}} を取り出す。
+
+    結果リンクはレース確定後にだけ現れる。"grade" は格のあるレースにだけ付く（値は normalize_grade の戻り値）。
     """
     out: dict[int, dict[str, str]] = {}
     for kind, rx in _RACE_CNAME_RE.items():
         for m in rx.finditer(html):
             out.setdefault(int(m.group(2)), {}).setdefault(kind, m.group(0))
+    for tr in _soup(html).select("tr"):
+        icon = tr.select_one(".grade_icon img")
+        grade = normalize_grade(icon.get("alt")) if icon else ""
+        number = _row_race_number(str(tr)) if grade else None
+        if number in out:
+            out[number]["grade"] = grade
     return out
 
 

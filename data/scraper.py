@@ -136,7 +136,7 @@ class JraDataSource(DataSource):
         return P.parse_race_links(self._race_list(m)).get(k.number)
 
     @staticmethod
-    def _to_race(course: str, pr: P.ParsedRace) -> Race:
+    def _to_race(course: str, pr: P.ParsedRace, grade: str = "") -> Race:
         return Race(
             race_id=make_race_id(pr.date, course, pr.number),
             date=pr.date,
@@ -149,6 +149,7 @@ class JraDataSource(DataSource):
             post_time=pr.post_time,
             horses=tuple(pr.horses),
             race_class=pr.race_class,
+            grade=grade,
         )
 
     @staticmethod
@@ -169,8 +170,12 @@ class JraDataSource(DataSource):
             des = re.search(r"pw01des\d{2}\d{2}\d{4}\d{2}\d{2}\d{8}/[0-9A-F]{2}", race_list)
             if des is None:
                 continue
+            links = P.parse_race_links(race_list)
             html = self.f.get(m.path, des.group(0), ttl=TTL_CARD)
-            races.extend(self._to_race(m.course, pr) for pr in P.parse_race_cards(html))
+            races.extend(
+                self._to_race(m.course, pr, links.get(pr.number, {}).get("grade", ""))
+                for pr in P.parse_race_cards(html)
+            )
         return sorted(races, key=lambda r: (r.course, r.number))
 
     def get_race(self, race_id: str) -> Race | None:
@@ -187,8 +192,13 @@ class JraDataSource(DataSource):
         html = self.f.get("/JRADB/accessD.html", links["card"], ttl=TTL_CARD)
         for pr in P.parse_race_cards(html):
             if pr.number == k.number and pr.date == k.date:
-                return self._to_race(k.course, pr)
+                return self._to_race(k.course, pr, links.get("grade", ""))
         return None
+
+    def card_cname(self, race_id: str) -> str | None:
+        """出馬表ページの cname。netkeiba の race_id を作るのに使う（回・日は race_id に入っていないため）。"""
+        links = self._card_links(canonical_race_id(race_id))
+        return links.get("card") if links else None
 
     def get_odds(self, race_id: str, bet_type: BetType) -> dict[str, float]:
         rid = canonical_race_id(race_id)

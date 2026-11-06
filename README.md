@@ -29,7 +29,10 @@ keiba-mcp/
 │  ├─ base.py         # データ取得のインターフェース
 │  ├─ dummy.py        # ダミーデータ（最初はこれ）
 │  ├─ scraper.py      # JRA 公式サイトからの取得（間隔制限・キャッシュつき）
-│  └─ jra_parse.py    # JRA のページ（HTML）の解析
+│  ├─ jra_parse.py    # JRA のページ（HTML）の解析
+│  ├─ supplement.py   # 補助データのファイルの読み書き（サーバはここで読むだけ）
+│  ├─ netkeiba.py     # netkeiba からの取得（admin.py 専用。サーバからは読み込まない）
+│  └─ netkeiba_parse.py  # netkeiba のページの解析
 ├─ voter/
 │  ├─ base.py         # 投票のインターフェース
 │  ├─ dry_run.py      # 記録だけ（最初はこれ）
@@ -44,6 +47,7 @@ keiba-mcp/
 | --- | --- |
 | `get_race_card(date, course?, race_number?)` | 指定日の出馬表（レース一覧・出走馬）を返す。`race_number` を指定すると近走成績・血統つきの詳細版 |
 | `get_odds(race_id)` | 指定レースの券種別オッズを返す |
+| `get_race_insights(race_id)` | 取り込み済みの補助データ（追い切り評価・短評・時計・中間調教・厩舎コメント）を返す。読み取り専用で、なければ空 |
 | `place_bet(race_id, bet_type, horses, amount, note?)` | 買い目を送る。ガード層を通過したものだけ投票層へ。結果（受理/拒否と理由）を返す。`note` は買い目の理由（成績の振り返り用） |
 | `get_race_result(race_id)` | 結果（着順・払戻）をデータ層から取得し、そのレースの買い目を精算して返す |
 | `settle_pending_bets()` | 未精算の買い目があるレースの結果をまとめて取得・精算する |
@@ -68,7 +72,9 @@ keiba-mcp/
   - 再開は人間が補充して行う：`uv run admin.py resume --note "3000円補充"`。補充した時点の損失を基準にし、そこから新たに停止ラインまで投票できる
   - 状態の確認は `uv run admin.py status`、補充の履歴は `uv run admin.py history`。これらは人間専用で、MCP（AI）からは使えない
   - 未精算の投票は全額損失として数える。外れたら停止ラインを超える投票も拒否する
-- 投票対象のレース番号を制限（11R＝メインのみ）
+- 投票対象のレースを制限。既定は 11R（メイン）のみ。`config.toml` の `[guard]` に `race_scope = "11r_and_graded"` を足すと、11R に加えて重賞（平地 GⅠ〜GⅢ・リステッド、障害 J・GⅠ〜J・GⅢ）も投票できる
+  - 項目がなければ `"11r_only"`（従来どおり）。広げるのは人間が設定したときだけ。OP 特別は対象外
+  - 格は JRA のレース一覧の `grade_icon` の alt から判定する。読み取れない・知らない表記のレースは対象外（安全側）。金額の上限・締切・重複・停止は 11R と同じ
 - 同一レース・同一買い目の重複投票を拒否（馬連・ワイド・3連複は馬番の順不同で判定、馬単・3連単は順番どおり）
 - 金額は 100 円単位など、券種ごとの頭数・馬番の重複などの妥当性チェック
 - 存在しない race_id・馬番（取消・除外を含む）の拒否
@@ -101,7 +107,7 @@ AI の出力は信用せず、必ずここで検証する。
 
 キーチェーンの無い環境（Linux の VM など）では、アクセストークンを書いたファイルを `config.toml` の `credentials.bitwarden.token_file` に指定する（リポジトリの外に置き、`chmod 600`）。環境変数 `BWS_ACCESS_TOKEN` でも渡せる。探す順番は **環境変数 → token_file → キーチェーン**。Linux への bws のインストールは `curl https://bws.bitwarden.com/install | sh`（インストール先が無ければ先に `sudo mkdir -p /usr/local/bin`）。
 
-Bitwarden を使わない場合は `config.toml` の `credentials.provider` を `"env"` にして、環境変数 `KEIBA_INET_ID`・`KEIBA_SUBSCRIBER_NUMBER`・`KEIBA_PIN`・`KEIBA_PARS_NUMBER` に置く。
+Bitwarden を使わない場合は `config.toml` の `credentials.provider` を `"env"` にして、環境変数 `KEIBA_INET_ID`・`KEIBA_SUBSCRIBER_NUMBER`・`KEIBA_PIN`・`KEIBA_PARS_NUMBER` に置く。netkeiba の分は `KEIBA_NETKEIBA_ID`・`KEIBA_NETKEIBA_PASSWORD`。
 
 ## 実装方針
 
@@ -136,6 +142,50 @@ Bitwarden を使わない場合は `config.toml` の `credentials.provider` を 
 - 出馬表は開催週の分だけ取得できる（JRA の出馬表ページに載っている範囲）。結果は過去の開催も取得できる
 - 出走取消・競走除外の馬を含む買い目は、精算時に返還（払戻＝投票額）として扱う
 - ページの構造が変わったら `data/jra_parse.py` を直す。テストは架空データの見本 HTML（`tests/fixtures/jra/`）で行い、ネットワークには出ない
+
+## netkeiba の補助データ
+
+重賞の予想を補強するために、netkeiba プレミアム（本人の契約）の追い切り・厩舎コメントを取り込む。
+
+- 取り込みは `admin.py netkeiba-fetch` が行い、JSON に保存する。MCP サーバはそのファイルを `get_race_insights` で読むだけで、認証情報も通信も使わない
+- **投票の経路には混ぜない。** `place_bet` は補助データを読まないので、取得元が落ちても投票は止まらない。精算にも使わない。`db.sqlite` にも入れない
+- 対象は発走前の重賞（平地 G・障害 J・G）だけ。リステッドは投票はできても取り込みの対象外（プレミアムの中間調教の範囲外のため）
+- 規約（第14条 私的利用、第17条 運営の妨害の禁止）と、公式サポートの「多数のリクエストには予告なく通信制限をかける」という説明を確認済み（2026-11-06）。高頻度の取得はアカウント側のリスクになるので、1レース2ページ・間隔3秒以上（プロセスをまたいでも守る）・キャッシュ6時間で、自動の再試行はしない。ログイン失敗や 403 などが出たらその場で止まる
+- 取得したデータは私的利用に限り、外に出さない（`insights/`・`netkeiba_cache.sqlite`・`captures/` は .gitignore 済み）
+- 調教・厩舎コメントの公開はレース前日13時。土曜分は金曜の夜、日曜分は土曜13時以降に取得する
+
+```bash
+uv run admin.py check-credentials --netkeiba          # シークレットを取り出せるか確認（ログインはしない）
+uv run admin.py netkeiba-fetch --race 20261107-KYOTO-11   # 1レース
+uv run admin.py netkeiba-fetch --date 2026-11-07          # その日の重賞をまとめて（--course KYOTO で絞り込み）
+uv run admin.py netkeiba-fetch --race 20261107-KYOTO-11 --save-pages  # ページも captures/netkeiba/ に保存（解析の調整用）
+```
+
+準備：Bitwarden Secrets Manager の keiba-mcp プロジェクトに、キー名 `SC_NetkeibaId`・`SC_NetkeibaPassword` でシークレットを登録する。シークレットが無ければコマンドは netkeiba に接続せずに中止する。
+
+`config.toml` の項目はどれも任意で、書かなければ次の既定値で動く。
+
+```toml
+[data.netkeiba]
+insights_dir = "insights"               # 保存先（config.toml からの相対パス）
+cache_path = "netkeiba_cache.sqlite"
+request_interval_sec = 3                # 3 秒未満は設定不可
+user_agent = "keiba-mcp (personal use)"
+
+[credentials.bitwarden.secret_keys]     # シークレットのキー名。bws secret list から探す
+netkeiba_id = "SC_NetkeibaId"
+netkeiba_password = "SC_NetkeibaPassword"
+
+[credentials.bitwarden.secret_ids]      # UUID を書くと、キー名より優先して bws secret get で取り出す
+# netkeiba_id = "..."
+# netkeiba_password = "..."
+```
+
+キー名で探すと `bws secret list` がプロジェクトの全シークレットを返す（目的の1件以外は捨てて、保持も表示もしない）。即PAT の認証情報も一緒に読み出したくない場合は UUID を指定する。
+
+調教（`type=1`「中間の調教全て」）と厩舎コメントの解析は、保存した本物のページで確認済み。ページの構造が変わると解析エラーになり、何も保存しない。そのときは `--save-pages` を付けて取得し、保存したページに合わせて `data/netkeiba_parse.py` の先頭の定数を直す。
+
+**中間調教。** `interim_count` は最終追い切りを含む本数。`interim_highlights` は最終追い切りを除いた中間調教のうち強いものを最大3本で、順番はページの速い時計の印（オレンジ2点・黄色1点）の合計、同点なら評価（A〜D）、さらに同点なら新しい方。印の基準はコースごとなので、コースをまたいで比べられる。全本数の載っていないページ（`type=2` など）が返ったときは、`interim_count` は `null`（不明。0本ではない）、`interim_highlights` は空になる。
 
 ## 使い方
 

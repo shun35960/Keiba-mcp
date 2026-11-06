@@ -5,6 +5,7 @@
 - bws のアクセストークンは macOS のキーチェーンに保存し、実行時に読む（ファイルに平文で置かない）
 - 取り出した値は Secret で包み、print やログに出しても伏せ字になるようにする
 - MCP（AI）には渡さない。このモジュールを使うのは投票層（voter/browser.py）と admin.py だけ
+- netkeiba の ID・パスワードは admin.py の netkeiba-fetch だけが使う（サーバは取得済みのファイルを読むだけ）
 """
 
 from __future__ import annotations
@@ -23,7 +24,11 @@ CREDENTIAL_LABELS = {
     "subscriber_number": "加入者番号",
     "pin": "暗証番号",
     "pars_number": "P-ARS番号",
+    "netkeiba_id": "netkeiba の ID",
+    "netkeiba_password": "netkeiba のパスワード",
 }
+# netkeiba の補助データの取得に使う認証情報の名前（投票には使わない）
+NETKEIBA_CREDENTIAL_NAMES = ("netkeiba_id", "netkeiba_password")
 
 
 class CredentialError(Exception):
@@ -136,7 +141,11 @@ def keychain_token(service: str, account: str, *, runner: Runner = subprocess.ru
 
 
 class BitwardenCredentialProvider(CredentialProvider):
-    """Bitwarden Secrets Manager から `bws secret get <id>` で取り出す。"""
+    """Bitwarden Secrets Manager から取り出す。
+
+    secret_ids に ID があれば `bws secret get <id>`。なければ secret_keys のキー名で `bws secret list` から探す。
+    list の出力にはマシンアカウントから見える全シークレットの値が入るので、目的の1件以外は保持・表示しない。
+    """
 
     def __init__(
         self,
@@ -145,8 +154,10 @@ class BitwardenCredentialProvider(CredentialProvider):
         *,
         bws_path: str = "bws",
         runner: Runner = subprocess.run,
+        secret_keys: dict[str, str] | None = None,
     ):
         self.secret_ids = secret_ids
+        self.secret_keys = secret_keys or {}
         self.token_source = token_source
         self.bws_path = bws_path
         self.runner = runner
@@ -154,6 +165,9 @@ class BitwardenCredentialProvider(CredentialProvider):
     def get(self, name: str) -> Secret:
         label = CREDENTIAL_LABELS.get(name, name)
         secret_id = self.secret_ids.get(name, "").strip()
+        key = self.secret_keys.get(name, "").strip()
+        if not secret_id and key:
+            return self._get_by_key(label, key)
         if not secret_id:
             raise CredentialError(f"{label} の Secret ID が config.toml に設定されていません")
         if not _UUID_RE.fullmatch(secret_id):
@@ -161,11 +175,40 @@ class BitwardenCredentialProvider(CredentialProvider):
                 f"{label} の Secret ID の形式が正しくありません（{secret_id!r}）。"
                 "Bitwarden の画面でシークレットの ID（xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx の形）をコピーしてください"
             )
+        stdout = self._run(["secret", "get", secret_id], label)  # 既定の出力は JSON
+        try:
+            value = json.loads(stdout)["value"]
+        except (ValueError, KeyError, TypeError):
+            raise CredentialError(f"{label} の取り出し結果を読めませんでした") from None
+        return self._wrap(label, value)
+
+    def _get_by_key(self, label: str, key: str) -> Secret:
+        stdout = self._run(["secret", "list"], label)
+        try:
+            found = [s["value"] for s in json.loads(stdout) if s["key"] == key]
+        except (ValueError, KeyError, TypeError):
+            raise CredentialError(f"{label} の取り出し結果を読めませんでした") from None
+        if not found:
+            raise CredentialError(
+                f"{label} のシークレット（キー名 {key}）が Bitwarden Secrets Manager に見つかりません。"
+                "keiba-mcp プロジェクトに登録してください"
+            )
+        if len(found) > 1:
+            raise CredentialError(f"{label} のシークレット（キー名 {key}）が複数あります。1件にしてください")
+        return self._wrap(label, found[0])
+
+    @staticmethod
+    def _wrap(label: str, value: object) -> Secret:
+        if not isinstance(value, str) or not value:
+            raise CredentialError(f"{label} の値が空です")
+        return Secret(value)
+
+    def _run(self, args: list[str], label: str) -> str:
         token = self.token_source()
         env = {**os.environ, "BWS_ACCESS_TOKEN": token}
         try:
             p = self.runner(
-                [self.bws_path, "secret", "get", secret_id],  # 既定の出力は JSON
+                [self.bws_path, *args],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -185,13 +228,7 @@ class BitwardenCredentialProvider(CredentialProvider):
                 + (f": {detail}" if detail else "")
                 + "）。Secret ID・アクセストークン・マシンアカウントの権限を確認してください"
             )
-        try:
-            value = json.loads(p.stdout)["value"]
-        except (ValueError, KeyError, TypeError):
-            raise CredentialError(f"{label} の取り出し結果を読めませんでした") from None
-        if not isinstance(value, str) or not value:
-            raise CredentialError(f"{label} の値が空です")
-        return Secret(value)
+        return p.stdout
 
 
 def build_credential_provider(config) -> CredentialProvider:
@@ -204,6 +241,7 @@ def build_credential_provider(config) -> CredentialProvider:
             config.bws_keychain_service, config.bws_keychain_account, token_file=config.bws_token_file
         ),
         bws_path=config.bws_path,
+        secret_keys=config.bws_secret_keys,
     )
 
 

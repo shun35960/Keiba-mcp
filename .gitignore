@@ -17,3 +17,6 @@ db.sqlite
 
 # 即PAT の画面保存（tools/capture_ipat.py）。JRA のページなのでリポジトリに入れない
 captures/
+
+# netkeiba の補助データ（私的利用に限る。リポジトリに入れない）
+insights/

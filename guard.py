@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from config import GuardConfig
+from config import RACE_SCOPE_GRADED, GuardConfig
 from db import Database
-from models import BetType, Race, combination_key, normalize_horses, parse_bet_type, parse_race_id, week_start
+from models import GUARD_GRADES, BetType, Race, combination_key, normalize_horses, parse_bet_type, parse_race_id, week_start
 
 # 発走時刻の何分前で締め切るか
 CLOSE_BEFORE_POST = timedelta(minutes=2)
@@ -58,6 +58,13 @@ class Guard:
                 "累計損失が停止ラインに達したため、投票は自動停止中です。人間が補充して再開するまで、投票はすべて拒否されます。"
             )
 
+    def _race_allowed(self, race: Race) -> bool:
+        """投票対象のレースか。重賞の判定はデータ層の race.grade だけで行い、判定できなければ不可（安全側）。"""
+        cfg = self.config
+        if not cfg.allowed_race_numbers or race.number in cfg.allowed_race_numbers:
+            return True
+        return cfg.race_scope == RACE_SCOPE_GRADED and race.grade in GUARD_GRADES
+
     def validate(
         self,
         *,
@@ -85,8 +92,13 @@ class Guard:
             raise GuardRejection(str(e)) from None
         if race is None:
             raise GuardRejection(f"race_id '{race_id}' のレースは存在しません。get_race_card で race_id を確認してください。")
-        if cfg.allowed_race_numbers and race.number not in cfg.allowed_race_numbers:
+        if not self._race_allowed(race):
             allowed = "、".join(f"{n}R" for n in sorted(cfg.allowed_race_numbers))
+            if cfg.race_scope == RACE_SCOPE_GRADED:
+                raise GuardRejection(
+                    f"{race.number}R は投票対象外です。投票できるのは {allowed} と重賞（G・リステッド・J・G）だけで、"
+                    "このレースは重賞と確認できませんでした。"
+                )
             raise GuardRejection(f"{race.number}R は投票対象外です。投票できるのは {allowed} だけです。")
         if now >= race.post_time - CLOSE_BEFORE_POST:
             raise GuardRejection(f"{race.race_id} は締切済みです（発走 {race.post_time:%m/%d %H:%M}）。")

@@ -9,6 +9,15 @@ from pathlib import Path
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.toml"
 
+# guard.race_scope の値。既定は allowed_race_numbers（11R）だけ
+RACE_SCOPE_MAIN = "11r_only"
+RACE_SCOPE_GRADED = "11r_and_graded"  # allowed_race_numbers に加えて重賞（G・リステッド・J・G）も許可
+
+# netkeiba のリクエスト間隔の下限（秒）。アカウントの通信制限を避けるため、これより短くできない
+NETKEIBA_MIN_INTERVAL = 3.0
+# Bitwarden Secrets Manager で netkeiba の認証情報を探すときのキー名（既定）
+DEFAULT_SECRET_KEYS = {"netkeiba_id": "SC_NetkeibaId", "netkeiba_password": "SC_NetkeibaPassword"}
+
 
 @dataclass(frozen=True)
 class GuardConfig:
@@ -17,6 +26,7 @@ class GuardConfig:
     loss_stop_threshold: int
     bet_unit: int
     allowed_race_numbers: frozenset[int]  # 空なら全レース許可
+    race_scope: str = RACE_SCOPE_MAIN
 
 
 @dataclass(frozen=True)
@@ -44,6 +54,11 @@ class AppConfig:
     browser_proxy_server: str | None = None
     browser_tls_ca_file: Path | None = None
     browser_ignore_https_errors: bool = False
+    bws_secret_keys: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_SECRET_KEYS))
+    insights_dir: Path = Path("insights")
+    netkeiba_cache_path: Path = Path("netkeiba_cache.sqlite")
+    netkeiba_request_interval: float = NETKEIBA_MIN_INTERVAL
+    netkeiba_user_agent: str = "keiba-mcp (personal use)"
 
 
 def _positive_int(section: dict, key: str) -> int:
@@ -51,6 +66,11 @@ def _positive_int(section: dict, key: str) -> int:
     if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
         raise ValueError(f"config.toml: guard.{key} は正の整数で指定してください（現在: {v!r}）")
     return v
+
+
+def _relative_to(base: Path, value: object) -> Path:
+    path = Path(str(value)).expanduser()
+    return path if path.is_absolute() else base / path
 
 
 def load_config(path: str | os.PathLike | None = None) -> AppConfig:
@@ -63,12 +83,16 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
     numbers = g.get("allowed_race_numbers", [])
     if not isinstance(numbers, list) or not all(isinstance(n, int) and 1 <= n <= 12 for n in numbers):
         raise ValueError("config.toml: guard.allowed_race_numbers は 1〜12 の整数の配列で指定してください")
+    race_scope = g.get("race_scope", RACE_SCOPE_MAIN)
+    if race_scope not in (RACE_SCOPE_MAIN, RACE_SCOPE_GRADED):
+        raise ValueError(f"config.toml: guard.race_scope は \"{RACE_SCOPE_MAIN}\" か \"{RACE_SCOPE_GRADED}\" を指定してください")
     guard = GuardConfig(
         per_race_limit=_positive_int(g, "per_race_limit"),
         weekly_limit=_positive_int(g, "weekly_limit"),
         loss_stop_threshold=_positive_int(g, "loss_stop_threshold"),
         bet_unit=_positive_int(g, "bet_unit"),
         allowed_race_numbers=frozenset(numbers),
+        race_scope=race_scope,
     )
 
     data = raw.get("data", {})
@@ -86,12 +110,18 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
     if not cache_path.is_absolute():
         cache_path = p.parent / cache_path
 
+    nk = data.get("netkeiba", {})
+    nk_interval = nk.get("request_interval_sec", NETKEIBA_MIN_INTERVAL)
+    if not isinstance(nk_interval, (int, float)) or isinstance(nk_interval, bool) or nk_interval < NETKEIBA_MIN_INTERVAL:
+        raise ValueError("config.toml: data.netkeiba.request_interval_sec は 3 秒以上で指定してください（通信制限を避けるため）")
+
     cred = raw.get("credentials", {})
     provider = cred.get("provider", "bitwarden")
     if provider not in ("bitwarden", "env"):
         raise ValueError("config.toml: credentials.provider は \"bitwarden\" か \"env\" を指定してください")
     bw = cred.get("bitwarden", {})
     secret_ids = {str(k): str(v) for k, v in bw.get("secret_ids", {}).items()}
+    secret_keys = {**DEFAULT_SECRET_KEYS, **{str(k): str(v) for k, v in bw.get("secret_keys", {}).items()}}
     token_file = str(bw.get("token_file", "") or "").strip()
     token_path = None
     if token_file:
@@ -147,4 +177,9 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         browser_proxy_server=(str(vb.get("proxy_server", "") or "").strip() or None),
         browser_tls_ca_file=ca_path,
         browser_ignore_https_errors=bool(vb.get("ignore_https_errors", False)),
+        bws_secret_keys=secret_keys,
+        insights_dir=_relative_to(p.parent, nk.get("insights_dir", "insights")),
+        netkeiba_cache_path=_relative_to(p.parent, nk.get("cache_path", "netkeiba_cache.sqlite")),
+        netkeiba_request_interval=float(nk_interval),
+        netkeiba_user_agent=str(nk.get("user_agent", "keiba-mcp (personal use)")),
     )

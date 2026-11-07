@@ -223,7 +223,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"投票: {'停止中（' + halted + '）' if halted else '受付中'}")
             print(f"損失（最後の補充以降）: {db.loss_since_replenish():,}円 / 停止ライン {g.loss_stop_threshold:,}円")
             print(f"累計損失（全期間）: {db.cumulative_loss():,}円")
-            print(f"上限: 1レース {g.per_race_limit:,}円 / 週 {g.weekly_limit:,}円")
+            limit_line = f"上限: 1レース {g.per_race_limit:,}円 / 週 {g.weekly_limit:,}円"
+            if g.sunday_reserve > 0:
+                limit_line += f"（日曜リザーブ {g.sunday_reserve:,}円）"
+            print(limit_line)
             races = "、".join(f"{n}R" for n in sorted(g.allowed_race_numbers)) or "全レース"
             if g.race_scope == RACE_SCOPE_GRADED:
                 races += " ＋ 重賞（G・リステッド・J・G）"

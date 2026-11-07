@@ -122,6 +122,14 @@ class Database:
         ).fetchone()
         return int(row[0])
 
+    def week_total_before_sunday(self, week_start: str, sunday: str) -> int:
+        """その週のうち、日曜より前（火〜土）のレースへの投票累計。日曜リザーブの判定用。"""
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM bets WHERE week_start = ? AND status = 'accepted' AND race_date < ?",
+            (week_start, sunday),
+        ).fetchone()
+        return int(row[0])
+
     def has_duplicate(self, race_id: str, bet_type: str, combination: str) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM bets WHERE race_id = ? AND bet_type = ? AND combination = ? AND status = 'accepted' LIMIT 1",

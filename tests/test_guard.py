@@ -206,6 +206,34 @@ def test_weekly_limit_resets_next_week(service):
     assert bet(service, race_id="20261114-TOKYO-11", horses=[1], amount=1000)["accepted"] is True
 
 
+def test_sunday_reserve_caps_saturday(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=1000, sunday_reserve=300)
+    assert bet(service, race_id=SAT_MAIN, horses=[1], amount=400)["accepted"] is True
+    assert bet(service, race_id=SAT_MAIN_KYOTO, horses=[1], amount=300)["accepted"] is True  # 土曜累計700ちょうど
+    r = bet(service, race_id=SAT_MAIN, horses=[2], amount=100)
+    assert r["accepted"] is False
+    assert "日曜分" in r["reason"]
+
+
+def test_sunday_reserve_leaves_room_on_sunday(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=1000, sunday_reserve=300)
+    assert bet(service, race_id=SAT_MAIN, horses=[1], amount=700)["accepted"] is True
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=300)["accepted"] is True  # リザーブ分を使える
+    r = bet(service, race_id=SUN_MAIN, horses=[2], amount=100)
+    assert r["accepted"] is False
+    assert "今週" in r["reason"]  # 週上限で拒否
+
+
+def test_sunday_reserve_not_applied_on_monday(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=1000, sunday_reserve=300)
+    assert bet(service, race_id="20261109-TOKYO-11", horses=[1], amount=1000)["accepted"] is True
+
+
+def test_sunday_reserve_zero_keeps_legacy_behavior(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=1000, sunday_reserve=0)
+    assert bet(service, race_id=SAT_MAIN, horses=[1], amount=1000)["accepted"] is True
+
+
 def test_rejected_bets_do_not_count_toward_limits(service):
     assert bet(service, horses=[1], amount=1100)["accepted"] is False
     assert bet(service, horses=[1], amount=1000)["accepted"] is True

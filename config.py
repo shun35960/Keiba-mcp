@@ -27,6 +27,7 @@ class GuardConfig:
     bet_unit: int
     allowed_race_numbers: frozenset[int]  # 空なら全レース許可
     race_scope: str = RACE_SCOPE_MAIN
+    sunday_reserve: int = 0  # 日曜分として週上限から必ず残す額（0 = 無効）
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,9 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
     race_scope = g.get("race_scope", RACE_SCOPE_MAIN)
     if race_scope not in (RACE_SCOPE_MAIN, RACE_SCOPE_GRADED):
         raise ValueError(f"config.toml: guard.race_scope は \"{RACE_SCOPE_MAIN}\" か \"{RACE_SCOPE_GRADED}\" を指定してください")
+    sunday_reserve = g.get("sunday_reserve", 0)
+    if not isinstance(sunday_reserve, int) or isinstance(sunday_reserve, bool) or sunday_reserve < 0:
+        raise ValueError("config.toml: guard.sunday_reserve は 0 以上の整数で指定してください")
     guard = GuardConfig(
         per_race_limit=_positive_int(g, "per_race_limit"),
         weekly_limit=_positive_int(g, "weekly_limit"),
@@ -93,6 +97,7 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         bet_unit=_positive_int(g, "bet_unit"),
         allowed_race_numbers=frozenset(numbers),
         race_scope=race_scope,
+        sunday_reserve=sunday_reserve,
     )
 
     data = raw.get("data", {})

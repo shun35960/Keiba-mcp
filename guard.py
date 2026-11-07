@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from config import RACE_SCOPE_GRADED, GuardConfig
@@ -144,6 +144,14 @@ class Guard:
         ws = week_start(race.date).isoformat()
         if self.db.week_total(ws) + amount > cfg.weekly_limit:
             raise GuardRejection("今週（火〜月）の上限額を超えるため拒否しました。金額を減らすか見送ってください。")
+
+        # 7b. 日曜リザーブ: 日曜より前のレースでは、日曜分を週上限から必ず残す
+        if cfg.sunday_reserve > 0:
+            sunday = date.fromisoformat(ws) + timedelta(days=5)
+            if race.date < sunday:
+                spent = self.db.week_total_before_sunday(ws, sunday.isoformat())
+                if spent + amount > cfg.weekly_limit - cfg.sunday_reserve:
+                    raise GuardRejection("日曜分を確保するため、土曜までの累計上限を超えるため拒否しました。金額を減らすか見送ってください。")
 
         # 8. 損失の停止ライン：この投票が全額外れても停止ラインを超えないこと
         if self.db.loss_since_replenish() + amount > cfg.loss_stop_threshold:

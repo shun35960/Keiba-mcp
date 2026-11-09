@@ -122,6 +122,14 @@ class Database:
         ).fetchone()
         return int(row[0])
 
+    def day_total(self, race_date: str) -> int:
+        """指定した開催日（レース日）の投票累計。曜日別上限の判定用。"""
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM bets WHERE race_date = ? AND status = 'accepted'",
+            (race_date,),
+        ).fetchone()
+        return int(row[0])
+
     def week_total_before_sunday(self, week_start: str, sunday: str) -> int:
         """その週のうち、日曜より前（火〜土）のレースへの投票累計。日曜リザーブの判定用。"""
         row = self._conn.execute(

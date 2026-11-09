@@ -153,6 +153,18 @@ class Guard:
                 if spent + amount > cfg.weekly_limit - cfg.sunday_reserve:
                     raise GuardRejection("日曜分を確保するため、土曜までの累計上限を超えるため拒否しました。金額を減らすか見送ってください。")
 
+        # 7c. 曜日別上限: 土曜は土曜分だけ、日曜は月曜（祝日開催）と共有する枠で数える
+        weekday = race.date.weekday()
+        if weekday == 5 and cfg.saturday_limit > 0:
+            if self.db.day_total(race.date.isoformat()) + amount > cfg.saturday_limit:
+                raise GuardRejection("土曜日の上限額を超えるため拒否しました。金額を減らすか見送ってください。")
+        elif weekday in (6, 0) and cfg.sunday_limit > 0:
+            sunday = race.date if weekday == 6 else race.date - timedelta(days=1)
+            monday = sunday + timedelta(days=1)
+            spent = self.db.day_total(sunday.isoformat()) + self.db.day_total(monday.isoformat())
+            if spent + amount > cfg.sunday_limit:
+                raise GuardRejection("日曜日側の上限額を超えるため拒否しました。金額を減らすか見送ってください。")
+
         # 8. 損失の停止ライン：この投票が全額外れても停止ラインを超えないこと
         if self.db.loss_since_replenish() + amount > cfg.loss_stop_threshold:
             raise GuardRejection("この投票が外れると累計損失が停止ラインを超えるため拒否しました。")

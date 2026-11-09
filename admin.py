@@ -226,6 +226,10 @@ def main(argv: list[str] | None = None) -> int:
             limit_line = f"上限: 1レース {g.per_race_limit:,}円 / 週 {g.weekly_limit:,}円"
             if g.sunday_reserve > 0:
                 limit_line += f"（日曜リザーブ {g.sunday_reserve:,}円）"
+            if g.saturday_limit > 0:
+                limit_line += f"（土曜 {g.saturday_limit:,}円まで）"
+            if g.sunday_limit > 0:
+                limit_line += f"（日曜側 {g.sunday_limit:,}円まで）"
             print(limit_line)
             races = "、".join(f"{n}R" for n in sorted(g.allowed_race_numbers)) or "全レース"
             if g.race_scope == RACE_SCOPE_GRADED:

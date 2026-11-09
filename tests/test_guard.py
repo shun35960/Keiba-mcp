@@ -234,6 +234,37 @@ def test_sunday_reserve_zero_keeps_legacy_behavior(make_service):
     assert bet(service, race_id=SAT_MAIN, horses=[1], amount=1000)["accepted"] is True
 
 
+def test_saturday_limit(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=100000, saturday_limit=500, sunday_limit=500)
+    assert bet(service, race_id=SAT_MAIN, horses=[1], amount=500)["accepted"] is True
+    r = bet(service, race_id=SAT_MAIN_KYOTO, horses=[1], amount=100)
+    assert r["accepted"] is False
+    assert "土曜日" in r["reason"]
+    # 日曜は日曜側の枠で別に買える
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=500)["accepted"] is True
+
+
+def test_sunday_limit_shared_with_monday(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=100000, saturday_limit=500, sunday_limit=500)
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=500)["accepted"] is True
+    r = bet(service, race_id="20261109-TOKYO-11", horses=[1], amount=100)
+    assert r["accepted"] is False
+    assert "日曜日側" in r["reason"]
+
+
+def test_monday_alone_uses_sunday_limit(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=100000, sunday_limit=500)
+    assert bet(service, race_id="20261109-TOKYO-11", horses=[1], amount=500)["accepted"] is True
+    r = bet(service, race_id="20261109-TOKYO-11", horses=[2], amount=100)
+    assert r["accepted"] is False
+    assert "日曜日側" in r["reason"]
+
+
+def test_day_limits_zero_keep_legacy_behavior(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=1000, saturday_limit=0, sunday_limit=0)
+    assert bet(service, race_id=SAT_MAIN, horses=[1], amount=1000)["accepted"] is True
+
+
 def test_rejected_bets_do_not_count_toward_limits(service):
     assert bet(service, horses=[1], amount=1100)["accepted"] is False
     assert bet(service, horses=[1], amount=1000)["accepted"] is True

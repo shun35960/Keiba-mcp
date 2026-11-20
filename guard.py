@@ -153,11 +153,19 @@ class Guard:
                 if spent + amount > cfg.weekly_limit - cfg.sunday_reserve:
                     raise GuardRejection("日曜分を確保するため、土曜までの累計上限を超えるため拒否しました。金額を減らすか見送ってください。")
 
-        # 7c. 曜日別上限: 土曜は土曜分だけ、日曜は月曜（祝日開催）と共有する枠で数える
+        # 7c. 曜日別上限: 土曜は土曜分だけで数える。
+        #     monday_limit > 0 なら日曜・月曜（祝日開催）はそれぞれ当日分だけで数える（別枠）。
+        #     monday_limit == 0 なら日曜は月曜と共有する枠（sunday_limit）で数える（従来どおり）
         weekday = race.date.weekday()
         if weekday == 5 and cfg.saturday_limit > 0:
             if self.db.day_total(race.date.isoformat()) + amount > cfg.saturday_limit:
                 raise GuardRejection("土曜日の上限額を超えるため拒否しました。金額を減らすか見送ってください。")
+        elif cfg.monday_limit > 0 and weekday == 0:
+            if self.db.day_total(race.date.isoformat()) + amount > cfg.monday_limit:
+                raise GuardRejection("月曜日の上限額を超えるため拒否しました。金額を減らすか見送ってください。")
+        elif cfg.monday_limit > 0 and weekday == 6:
+            if cfg.sunday_limit > 0 and self.db.day_total(race.date.isoformat()) + amount > cfg.sunday_limit:
+                raise GuardRejection("日曜日の上限額を超えるため拒否しました。金額を減らすか見送ってください。")
         elif weekday in (6, 0) and cfg.sunday_limit > 0:
             sunday = race.date if weekday == 6 else race.date - timedelta(days=1)
             monday = sunday + timedelta(days=1)

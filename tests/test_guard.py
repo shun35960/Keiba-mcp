@@ -260,6 +260,89 @@ def test_monday_alone_uses_sunday_limit(make_service):
     assert "日曜日側" in r["reason"]
 
 
+MON_MAIN = "20261109-TOKYO-11"  # 祝日の月曜開催（SAT/SUN と同じ週）
+
+
+def test_monday_limit_zero_keeps_shared_sunday_monday_limit(make_service):
+    # monday_limit=0（既定）: 日曜500円使用後、月曜は日曜と共有の枠で拒否される（従来どおり）
+    service = make_service(per_race_limit=1000, weekly_limit=100000, saturday_limit=500, sunday_limit=500, monday_limit=0)
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=500)["accepted"] is True
+    r = bet(service, race_id=MON_MAIN, horses=[1], amount=100)
+    assert r["accepted"] is False
+    assert "日曜日側" in r["reason"]
+
+
+def test_monday_limit_separate_from_sunday(make_service):
+    # monday_limit=500: 日曜500円使用後も、月曜は別枠で500円まで買える（週1500円）
+    service = make_service(per_race_limit=1000, weekly_limit=1500, saturday_limit=500, sunday_limit=500, monday_limit=500)
+    assert bet(service, race_id=SAT_MAIN, horses=[1], amount=500)["accepted"] is True
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=500)["accepted"] is True
+    assert bet(service, race_id=MON_MAIN, horses=[1], amount=300)["accepted"] is True
+    assert bet(service, race_id=MON_MAIN, horses=[2], amount=200)["accepted"] is True  # 月曜累計500ちょうど
+
+
+def test_monday_limit_rejects_over_monday_limit(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=100000, sunday_limit=500, monday_limit=500)
+    # 1回で月曜上限を超える金額は拒否（拒否した分は枠に数えない）
+    assert bet(service, race_id=MON_MAIN, horses=[1], amount=600)["accepted"] is False
+    assert bet(service, race_id=MON_MAIN, horses=[1], amount=500)["accepted"] is True
+    r = bet(service, race_id=MON_MAIN, horses=[2], amount=100)
+    assert r["accepted"] is False
+    assert "月曜日" in r["reason"]
+    assert "500" not in r["reason"]
+
+
+def test_monday_limit_sunday_still_capped_when_monday_unused(make_service):
+    # 月曜を使っていなくても、日曜は sunday_limit を超えられない（月曜の枠を日曜に回さない）
+    service = make_service(per_race_limit=1000, weekly_limit=100000, sunday_limit=500, monday_limit=500)
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=600)["accepted"] is False
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=500)["accepted"] is True
+    r = bet(service, race_id=SUN_MAIN, horses=[2], amount=100)
+    assert r["accepted"] is False
+    assert "日曜日" in r["reason"]
+    assert "500" not in r["reason"]
+
+
+def test_monday_usage_does_not_consume_sunday_limit(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=100000, sunday_limit=500, monday_limit=500)
+    assert bet(service, race_id=MON_MAIN, horses=[1], amount=500)["accepted"] is True
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=500)["accepted"] is True
+
+
+def test_monday_limit_still_bounded_by_weekly_limit(make_service):
+    service = make_service(per_race_limit=1000, weekly_limit=1000, saturday_limit=500, sunday_limit=500, monday_limit=500)
+    assert bet(service, race_id=SAT_MAIN, horses=[1], amount=500)["accepted"] is True
+    assert bet(service, race_id=SUN_MAIN, horses=[1], amount=500)["accepted"] is True
+    r = bet(service, race_id=MON_MAIN, horses=[1], amount=100)
+    assert r["accepted"] is False
+    assert "今週" in r["reason"]
+
+
+def _write_guard_config(tmp_path, extra=""):
+    p = tmp_path / "c.toml"
+    p.write_text(
+        "[guard]\nper_race_limit = 500\nweekly_limit = 1000\nloss_stop_threshold = 3000\nbet_unit = 100\n"
+        f"allowed_race_numbers = [11]\n{extra}\n",
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_config_monday_limit_default_and_load(tmp_path):
+    from config import load_config
+
+    assert load_config(_write_guard_config(tmp_path)).guard.monday_limit == 0
+    assert load_config(_write_guard_config(tmp_path, "monday_limit = 500")).guard.monday_limit == 500
+
+
+@pytest.mark.parametrize("value", ["-100", "true", '"500"', "1.5"])
+def test_config_rejects_invalid_monday_limit(tmp_path, value):
+    from config import load_config
+
+    with pytest.raises(ValueError, match="monday_limit"):
+        load_config(_write_guard_config(tmp_path, f"monday_limit = {value}"))
+
+
 def test_day_limits_zero_keep_legacy_behavior(make_service):
     service = make_service(per_race_limit=1000, weekly_limit=1000, saturday_limit=0, sunday_limit=0)
     assert bet(service, race_id=SAT_MAIN, horses=[1], amount=1000)["accepted"] is True

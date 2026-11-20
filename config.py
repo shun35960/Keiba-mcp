@@ -29,7 +29,8 @@ class GuardConfig:
     race_scope: str = RACE_SCOPE_MAIN
     sunday_reserve: int = 0  # 日曜分として週上限から必ず残す額（0 = 無効）
     saturday_limit: int = 0  # 土曜のレースへの1日上限（0 = 無効）
-    sunday_limit: int = 0  # 日曜（とその週の月曜）側の上限（0 = 無効）
+    sunday_limit: int = 0  # 日曜側の上限（monday_limit が 0 ならその週の月曜と共有）（0 = 無効）
+    monday_limit: int = 0  # 月曜（祝日開催）の1日上限。0 なら月曜は sunday_limit を日曜と共有
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,9 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
     sunday_limit = g.get("sunday_limit", 0)
     if not isinstance(sunday_limit, int) or isinstance(sunday_limit, bool) or sunday_limit < 0:
         raise ValueError("config.toml: guard.sunday_limit は 0 以上の整数で指定してください")
+    monday_limit = g.get("monday_limit", 0)
+    if not isinstance(monday_limit, int) or isinstance(monday_limit, bool) or monday_limit < 0:
+        raise ValueError("config.toml: guard.monday_limit は 0 以上の整数で指定してください")
     guard = GuardConfig(
         per_race_limit=_positive_int(g, "per_race_limit"),
         weekly_limit=_positive_int(g, "weekly_limit"),
@@ -108,6 +112,7 @@ def load_config(path: str | os.PathLike | None = None) -> AppConfig:
         sunday_reserve=sunday_reserve,
         saturday_limit=saturday_limit,
         sunday_limit=sunday_limit,
+        monday_limit=monday_limit,
     )
 
     data = raw.get("data", {})
